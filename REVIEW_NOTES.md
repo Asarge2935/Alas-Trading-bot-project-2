@@ -1,13 +1,78 @@
 # Review Notes — Alas Trading Bot Backtester
 
-Date: 2026-05-06
 Branch: `claude/new-session-ysAXb`
-Reviewer pass: code review and finalization before paper trading.
 
-This document lists every issue found during the Phase 1–6 review of the
-materials provided in the handoff, the severity of each issue, and what
-was changed (or explicitly left alone). It is intended to be read alongside
-`backtest.py`, `rules.json`, and `docs/HANDOFF.md`.
+This document records every issue found during review and what was
+done about it. It is intended to be read alongside `backtest.py`,
+`rules.json`, and `docs/HANDOFF.md`.
+
+There have been two review passes:
+
+- **First pass (2026-05-06)** — initial finalization from the handoff.
+  Documented in the body of this file.
+- **Second pass (2026-05-06, later same day)** — user-driven review
+  request focused on backtest realism, mark-to-market accounting, API
+  resilience, and documentation sync. Documented in the next section.
+
+---
+
+## Second review pass — applied
+
+This pass made 12 changes to `backtest.py`, restructured `rules.json`,
+and rewrote large parts of `SAMPLE_RUN.md` and
+`PRE_PAPER_TRADE_CHECKLIST.md`. It also **supersedes** part of the
+first-pass C1 and m4 notes below; see the "Superseded by second pass"
+markers.
+
+### `backtest.py` changes
+
+| # | Change | Function / area |
+|---|---|---|
+| 1 | Drop incomplete latest candle before indicators | `drop_incomplete_candles`, `main` |
+| 2 | Rename `signal_time` → `signal_candle_time` (Coinbase candle START) | `Trade` dataclass |
+| 3 | **Mark-to-market equity** drives peak / drawdown / circuit breakers (replaces first-pass C1 fix) | `run_backtest` |
+| 4 | End-of-backtest closes add `net_pnl_usd` to `cumulative_pnl` so portfolio total reflects them | `run_backtest` mark-to-market loop |
+| 5 | `report_summary` derives final P&L from `sum(t.net_pnl_usd)` so the printed total reconciles to `trades.csv` | `report_summary` |
+| 6 | Add `exit_time_partial` to `Trade`; recorded when target 1 fires | `Trade`, `check_exit` |
+| 7 | `calculate_trade_funding_drag` charges full notional pre-partial, half post-partial | new helper, `finalize_trade` |
+| 8 | `is_high_vol_bar` (range > 2 × ATR) wired into `check_exit` and end-of-backtest close | new helper, `check_exit` |
+| 9 | RSI returns 100 / 0 / 50 in extreme/flat regimes instead of NaN | `add_indicators` |
+| 10 | `safe_get` adds HTTP 429 backoff, bounded retries, and a `User-Agent` header | new helper, `fetch_candles` |
+| 11 | Empty DataFrame guard skips the symbol; aborts if BTC missing (BTC RSI is required) | `main` |
+| 12 | Trades sorted by `exit_time` before max-consecutive-losses calculation | `report_summary` |
+
+### `rules.json` changes
+
+- Strategy renamed to `"6H Trend-Pullback Scanner with Volume + BTC Regime Filter"`.
+- Symbols split into `live_symbols` and `backtest_symbols`; `watchlist` preserved as alias.
+- Added `safety_flags`: `paper_trading_enabled: true`, `live_trading_enabled: false`, `kill_switch_required: true`.
+- Added `execution.incomplete_candle_policy`.
+- `risk_rules.drawdown_calculation` documents the mark-to-market definition.
+- `cost_assumptions.high_vol_slippage_trigger` and `funding_partial_close_policy` documented.
+- `blackout_dates` restructured into a per-symbol date-list dict; old free-text examples preserved under `_examples`.
+- Drawdown entry rule clarified to `"drawdown_pct < 15 and not in_pause_window"`.
+- Blackout-date entry condition added explicitly to long and short rules.
+
+### `SAMPLE_RUN.md` changes
+
+- Caveats block at the top: spot proxy, funding placeholder, incomplete candles dropped, "passing the backtest does not authorize live trading".
+- Run-step list updated to mention drop-incomplete and rate-limit backoff.
+- `trades.csv` column table: `signal_candle_time` replaces `signal_time`; `exit_time_partial` added.
+- `equity_curve.csv` `equity` column defined as mark-to-market (`$500 + closed P&L + unrealized open-position P&L`).
+
+### `PRE_PAPER_TRADE_CHECKLIST.md` changes
+
+- Added gate sections **A1** (incomplete-candle), **A2** (mark-to-market), **A3** (portfolio reconciliation).
+- Section **B** reworded for `signal_candle_time` semantics; added **B1** partial-exit accounting checks.
+- Section **F** funding warning made explicit; half-notional post-partial called out.
+- Added section **I** — paper-trade setup (logging, daily summaries, no parameter changes during paper period).
+- Final go/no-go split into "to paper trade" and "to live trade" gate blocks per the review.
+
+### What's NOT done (intentionally deferred)
+
+- Real funding-rate fetcher — still a flat -0.5%/month placeholder.
+- `coinbase_exchange.py` adapter — not provided in the handoff upload, so live wiring is still out of scope.
+- Per-leg high-vol slippage — currently uses the **exit bar's** high-vol flag for entry, partial, and final legs. A more correct version would track each leg's bar separately. Acceptable simplification given the magnitudes involved.
 
 ---
 
@@ -54,14 +119,16 @@ underwater. Concrete failure: an early `-$100` losing streak (real DD =
 20% on a $500 account) would report 0% DD, and **the 15% pause and 25%
 stop circuit breakers would never fire** during early adverse runs.
 
-**What was fixed:** Drawdown is now measured against
-`ACCOUNT_SIZE_USD + cumulative_pnl`. `peak_account_value` is initialized
-to `ACCOUNT_SIZE_USD` ($500). This makes drawdown equivalent to standard
-peak-to-trough on actual account equity. See `backtest.py:227-233` and the
-post-trade update at `backtest.py:248-258`.
+**What was fixed (first pass):** Drawdown was moved from
+`peak_equity / cumulative_pnl` to `ACCOUNT_SIZE_USD + cumulative_pnl`,
+with `peak_account_value` initialized to $500.
 
-The equity curve CSV now exposes both `equity` (account value in dollars)
-and `cumulative_pnl` so you can sanity-check this manually.
+**Superseded by second pass (#3):** The drawdown baseline is now
+**mark-to-market**: `ACCOUNT_SIZE_USD + cumulative_pnl + unrealized_open_pnl`.
+Open losers can no longer hide behind closed winners. See `run_backtest`
+and the equity-curve CSV's `equity` column, which now stores the MTM
+account value directly. The CSV also retains `cumulative_pnl` (closed
+P&L only) for sanity checks.
 
 ### C2. Exit priority order mismatch between code and rules
 
@@ -210,10 +277,13 @@ then trading stops. This matches the spec.
 
 **Before:** `equity` was cumulative P&L (started at 0).
 
-**After:** `equity` is account value (`ACCOUNT_SIZE_USD + cumulative_pnl`,
-starts at 500.00). Added a new `cumulative_pnl` column for the prior
-meaning. Reporting in `report_summary` updated to print "Final equity"
-and "Net P&L" separately so the two are not confused.
+**After (first pass):** `equity` was set to
+`ACCOUNT_SIZE_USD + cumulative_pnl` (closed P&L only).
+
+**Superseded by second pass:** `equity` is now the **mark-to-market**
+account value: `$500 + closed P&L + unrealized open-position P&L`. The
+`cumulative_pnl` column still tracks closed-only P&L so you can compare
+the two and verify open-position drift on bars where `open_positions > 0`.
 
 ### m5. Volume units
 

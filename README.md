@@ -22,15 +22,31 @@ scanner across BTC, ETH, SOL, XRP, ADA, DOT.
 
 ## Strategy in one paragraph
 
-Every closed 6H bar, scan all 6 assets. A long fires when price is above
-EMA(50), EMA(20) is above EMA(50), RSI(14) is below 30, ATR is not in a
-volatility blow-off, volume confirms (≥1.2× 20-bar avg), and BTC isn't
-dumping (BTC RSI ≥ 35). Shorts are the mirror. Entry is at the next
-bar's open — no same-bar fills. Stop at 2 ATR. Close 50% at 3 ATR and
-move stop to breakeven. Close runner at 6 ATR or after 56 bars (14
-days), whichever comes first. Risk is fixed at $5 per trade ($500
-account, 1%). Max 2 open positions, 5 trades per week portfolio-wide.
-Drawdown 15% pauses the bot for 7 days, 25% stops it entirely.
+A 6H trend-pullback scanner. Every closed 6H bar, scan all 6 assets.
+A long fires when price is above EMA(50), EMA(20) is above EMA(50),
+RSI(14) is below 30, ATR is not in a volatility blow-off, volume
+confirms (≥1.2× 20-bar avg), and BTC isn't dumping (BTC RSI ≥ 35).
+Shorts are the mirror. Entry is at the next bar's open — no same-bar
+fills. Stop at 2 ATR. Close 50% at 3 ATR and move stop to breakeven.
+Close runner at 6 ATR or after 56 bars (14 days), whichever comes
+first. Risk is fixed at $5 per trade ($500 account, 1%). Max 2 open
+positions, 5 trades per week portfolio-wide. Drawdown 15% pauses the
+bot for 7 days, 25% stops it entirely; drawdown is measured on
+**mark-to-market** equity (closed P&L plus unrealized open P&L), so
+open losers can't hide behind closed winners.
+
+## Backtest realism notes
+
+- **Spot proxy.** The backtester uses Coinbase spot candles
+  (`BTC-USD`, ...) as a price proxy for the live perp universe
+  (`BTC-PERP-INTX`, ...). Coinbase's public candles endpoint serves
+  spot only.
+- **Closed bars only.** The latest still-forming 6H candle is dropped
+  before any indicator is computed.
+- **Funding is a flat placeholder** (-0.5%/month). Real historical
+  funding-rate data must be wired in before live trading.
+- Passing the backtest qualifies the strategy for **paper trading**
+  only — not for live capital.
 
 ## How to run the backtest
 
