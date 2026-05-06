@@ -89,6 +89,30 @@ EQUITY_CSV = os.path.join(OUTPUT_DIR, "equity_curve.csv")
 # Data fetching
 # ---------------------------------------------------------------------------
 
+USER_AGENT = "AlasTradingBotBacktester/1.0"
+
+
+def safe_get(url, params, max_retries=5):
+    """HTTP GET with rate-limit backoff and bounded retries."""
+    headers = {"User-Agent": USER_AGENT}
+    last_response = None
+
+    for attempt in range(max_retries):
+        r = requests.get(url, params=params, headers=headers, timeout=15)
+        last_response = r
+
+        if r.status_code == 429:
+            sleep_time = 0.5 * (2 ** attempt)
+            time.sleep(sleep_time)
+            continue
+
+        r.raise_for_status()
+        return r
+
+    last_response.raise_for_status()
+    return last_response
+
+
 def fetch_candles(product_id, granularity_seconds, days_back):
     """Pull historical 6H candles from Coinbase Exchange public API, paginated."""
     end = datetime.now(timezone.utc)
@@ -107,8 +131,7 @@ def fetch_candles(product_id, granularity_seconds, days_back):
             "granularity": granularity_seconds,
         }
         url = f"https://api.exchange.coinbase.com/products/{product_id}/candles"
-        r = requests.get(url, params=params, timeout=15)
-        r.raise_for_status()
+        r = safe_get(url, params)
         chunk = r.json()
         all_candles.extend(chunk)
         if not chunk:
@@ -141,11 +164,19 @@ def add_indicators(df):
     df["ema_50"] = df["close"].ewm(span=EMA_SLOW, adjust=False).mean()
     df["ema_20"] = df["close"].ewm(span=EMA_FAST, adjust=False).mean()
 
+    # RSI with explicit endpoint handling so strong one-sided runs don't produce NaN:
+    #   loss == 0 (pure up-move)   -> RSI = 100
+    #   gain == 0 (pure down-move) -> RSI = 0
+    #   gain == 0 and loss == 0    -> RSI = 50 (flat)
     delta = df["close"].diff()
     gain = delta.clip(lower=0).rolling(window=RSI_PERIOD).mean()
     loss = (-delta.clip(upper=0)).rolling(window=RSI_PERIOD).mean()
-    rs = gain / loss.replace(0, np.nan)
-    df["rsi_14"] = 100 - (100 / (1 + rs))
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    rsi = rsi.where(loss != 0, 100)
+    rsi = rsi.where(gain != 0, 0)
+    rsi = rsi.where(~((gain == 0) & (loss == 0)), 50)
+    df["rsi_14"] = rsi
 
     high_low = df["high"] - df["low"]
     high_close = (df["high"] - df["close"].shift()).abs()
@@ -166,7 +197,10 @@ def add_indicators(df):
 class Trade:
     symbol: str
     side: str
-    signal_time: pd.Timestamp
+    # Coinbase candle "time" is the candle START. signal_candle_time is the
+    # start time of the bar that produced the signal; the signal is only
+    # actionable AFTER the bar closes (i.e., signal_candle_time + TIMEFRAME).
+    signal_candle_time: pd.Timestamp
     entry_time: pd.Timestamp
     entry_price: float
     stop_price: float
@@ -181,6 +215,7 @@ class Trade:
     btc_rsi_at_signal: float
 
     exit_time: Optional[pd.Timestamp] = None
+    exit_time_partial: Optional[pd.Timestamp] = None
     exit_price_partial: Optional[float] = None
     exit_price_final: Optional[float] = None
     exit_reason: str = ""
@@ -211,6 +246,60 @@ def calculate_funding_drag(notional_usd, bars_held):
     days_held = bars_held / BARS_PER_DAY
     monthly_to_daily = FUNDING_DRAG_MONTHLY_PCT / 30
     return notional_usd * monthly_to_daily * days_held
+
+
+def calculate_trade_funding_drag(trade):
+    """
+    Funding drag that respects the partial close: full notional before target 1,
+    half notional after. Falls back to the simple notional × days_held when the
+    trade exited without a partial fill.
+    """
+    monthly_to_daily = FUNDING_DRAG_MONTHLY_PCT / 30
+
+    if trade.exit_time_partial is None:
+        days_held = trade.bars_held / BARS_PER_DAY
+        return trade.notional_usd * monthly_to_daily * days_held
+
+    bars_before_partial = (
+        trade.exit_time_partial - trade.entry_time
+    ).total_seconds() / TIMEFRAME_SECONDS
+    bars_after_partial = (
+        trade.exit_time - trade.exit_time_partial
+    ).total_seconds() / TIMEFRAME_SECONDS
+
+    days_before = bars_before_partial / BARS_PER_DAY
+    days_after = bars_after_partial / BARS_PER_DAY
+
+    funding_before = trade.notional_usd * monthly_to_daily * days_before
+    funding_after = (trade.notional_usd / 2) * monthly_to_daily * days_after
+
+    return funding_before + funding_after
+
+
+def is_high_vol_bar(bar):
+    """Flag a bar as high-volatility when its range exceeds 2 × ATR(14)."""
+    atr = bar.get("atr_14") if hasattr(bar, "get") else None
+    if atr is None or pd.isna(atr):
+        return False
+    bar_range = bar["high"] - bar["low"]
+    return bar_range > 2 * atr
+
+
+def unrealized_pnl(trade, current_price):
+    """
+    Mark-to-market P&L on the OPEN portion of the trade. After a partial close
+    at target 1, only half the original notional is still open.
+    """
+    if trade.side == "long":
+        move = current_price - trade.entry_price
+    else:
+        move = trade.entry_price - current_price
+
+    open_notional = trade.notional_usd
+    if trade.exit_price_partial is not None:
+        open_notional = trade.notional_usd / 2
+
+    return (move / trade.entry_price) * open_notional
 
 
 # ---------------------------------------------------------------------------
@@ -336,31 +425,47 @@ def run_backtest(data_by_symbol):
                 cumulative_pnl += trade.net_pnl_usd
                 del open_trades[sym]
 
-                account_value = ACCOUNT_SIZE_USD + cumulative_pnl
-                if account_value > peak_account_value:
-                    peak_account_value = account_value
-                drawdown_pct_from_peak = (
-                    (peak_account_value - account_value) / peak_account_value * 100
-                    if peak_account_value > 0 else 0
-                )
+        # 2. Mark-to-market equity: ACCOUNT + closed P&L + unrealized open P&L.
+        #    Drawdown and circuit breakers operate against this MTM number so
+        #    open losers can't hide behind closed winners.
+        open_pnl = 0.0
+        for sym, trade in open_trades.items():
+            bar = indexed[sym].loc[current_time]
+            open_pnl += unrealized_pnl(trade, bar["close"])
 
-                if drawdown_pct_from_peak >= DRAWDOWN_STOP_PCT:
-                    print(f"DRAWDOWN STOP HIT at {current_time}: {drawdown_pct_from_peak:.1f}%")
-                    return closed_trades, equity_curve
-                if drawdown_pct_from_peak >= DRAWDOWN_PAUSE_PCT and drawdown_pause_until is None:
-                    drawdown_pause_until = current_time + timedelta(days=DRAWDOWN_PAUSE_DAYS)
-                    print(f"DRAWDOWN PAUSE at {current_time}: {drawdown_pct_from_peak:.1f}% "
-                          f"— paused until {drawdown_pause_until.date()}")
+        mark_to_market_equity = ACCOUNT_SIZE_USD + cumulative_pnl + open_pnl
+
+        if mark_to_market_equity > peak_account_value:
+            peak_account_value = mark_to_market_equity
+        drawdown_pct_from_peak = (
+            (peak_account_value - mark_to_market_equity) / peak_account_value * 100
+            if peak_account_value > 0 else 0
+        )
+
+        if drawdown_pct_from_peak >= DRAWDOWN_STOP_PCT:
+            print(f"DRAWDOWN STOP HIT at {current_time}: {drawdown_pct_from_peak:.1f}%")
+            equity_curve.append({
+                "time": current_time,
+                "equity": mark_to_market_equity,
+                "cumulative_pnl": cumulative_pnl,
+                "open_positions": len(open_trades),
+                "drawdown_pct": drawdown_pct_from_peak,
+            })
+            return closed_trades, equity_curve
+        if drawdown_pct_from_peak >= DRAWDOWN_PAUSE_PCT and drawdown_pause_until is None:
+            drawdown_pause_until = current_time + timedelta(days=DRAWDOWN_PAUSE_DAYS)
+            print(f"DRAWDOWN PAUSE at {current_time}: {drawdown_pct_from_peak:.1f}% "
+                  f"— paused until {drawdown_pause_until.date()}")
 
         equity_curve.append({
             "time": current_time,
-            "equity": ACCOUNT_SIZE_USD + cumulative_pnl,
+            "equity": mark_to_market_equity,
             "cumulative_pnl": cumulative_pnl,
             "open_positions": len(open_trades),
             "drawdown_pct": drawdown_pct_from_peak,
         })
 
-        # 2. Check entry eligibility
+        # 3. Check entry eligibility
         if drawdown_pause_until and current_time < drawdown_pause_until:
             continue
         elif drawdown_pause_until and current_time >= drawdown_pause_until:
@@ -371,7 +476,7 @@ def run_backtest(data_by_symbol):
         if len(weekly_trade_times) >= MAX_TRADES_PORTFOLIO_PER_WEEK:
             continue
 
-        # 3. Scan all assets for signals on this bar
+        # 4. Scan all assets for signals on this bar
         candidates = []
         for sym in ASSETS:
             if sym in open_trades:
@@ -411,7 +516,7 @@ def run_backtest(data_by_symbol):
         candidates.sort(key=lambda x: x[2], reverse=True)
         sym, side, strength, bar, btc_bar = candidates[0]
 
-        # 4. Determine entry price (next bar open — no lookahead)
+        # 5. Determine entry price (next bar open — no lookahead)
         sym_df = indexed[sym].reset_index()
         sig_idx = sym_df.index[sym_df["time"] == current_time].tolist()
         if not sig_idx or sig_idx[0] + 1 >= len(sym_df):
@@ -441,7 +546,7 @@ def run_backtest(data_by_symbol):
 
         trade = Trade(
             symbol=sym, side=side,
-            signal_time=current_time, entry_time=entry_time,
+            signal_candle_time=current_time, entry_time=entry_time,
             entry_price=entry_price, stop_price=stop_price,
             target_1_price=target_1, target_2_price=target_2,
             initial_stop_distance=abs(entry_price - stop_price),
@@ -453,16 +558,18 @@ def run_backtest(data_by_symbol):
         trades_today[sym] += 1
         weekly_trade_times.append(current_time)
 
-    # Mark-to-market any still-open trades at the last bar
+    # Mark-to-market any still-open trades at the last bar — and add their
+    # net P&L to cumulative_pnl so the portfolio total reflects them.
     for sym, trade in open_trades.items():
         last_bar = indexed[sym].iloc[-1]
         bars_held = (last_bar.name - trade.entry_time).total_seconds() / TIMEFRAME_SECONDS
         finalize_trade(trade, {
             "exit_time": last_bar.name, "exit_price": last_bar["close"],
             "reason": "backtest_end", "bars_held": int(bars_held),
-            "is_high_vol": False,
+            "is_high_vol": is_high_vol_bar(last_bar),
         })
         closed_trades.append(trade)
+        cumulative_pnl += trade.net_pnl_usd
 
     return closed_trades, equity_curve
 
@@ -486,7 +593,7 @@ def check_exit(trade, bar, current_time):
     bars_held_so_far = (current_time - trade.entry_time).total_seconds() / TIMEFRAME_SECONDS
     if bars_held_so_far < 0:
         return None  # bar before entry — defensive
-    is_high_vol = False  # could refine by comparing bar ATR to the regime average
+    is_high_vol = is_high_vol_bar(bar)
 
     has_partial = trade.exit_price_partial is not None
 
@@ -498,6 +605,7 @@ def check_exit(trade, bar, current_time):
                     "is_high_vol": is_high_vol}
         if not has_partial and bar["high"] >= trade.target_1_price:
             trade.exit_price_partial = trade.target_1_price
+            trade.exit_time_partial = current_time
             trade.stop_price = trade.entry_price
             return None
         if has_partial and bar["high"] >= trade.target_2_price:
@@ -511,6 +619,7 @@ def check_exit(trade, bar, current_time):
                     "is_high_vol": is_high_vol}
         if not has_partial and bar["low"] <= trade.target_1_price:
             trade.exit_price_partial = trade.target_1_price
+            trade.exit_time_partial = current_time
             trade.stop_price = trade.entry_price
             return None
         if has_partial and bar["low"] <= trade.target_2_price:
@@ -579,7 +688,7 @@ def finalize_trade(trade, exit_event):
     else:
         trade.slippage_usd = calculate_slippage(trade.notional_usd, is_high_vol) * 2
 
-    trade.funding_usd = calculate_funding_drag(trade.notional_usd, trade.bars_held)
+    trade.funding_usd = calculate_trade_funding_drag(trade)
     trade.net_pnl_usd = trade.gross_pnl_usd - trade.fees_usd - trade.slippage_usd - trade.funding_usd
 
     one_r_dollars = (trade.initial_stop_distance / trade.entry_price) * trade.notional_usd
@@ -659,20 +768,23 @@ def report_summary(trades, equity_curve):
         print(f"  Funding drag:       -${total_fund:.2f}")
         print(f"  Net P&L:             ${total_pnl:+.2f}")
 
-    if equity_curve:
-        max_dd = max(p["drawdown_pct"] for p in equity_curve)
-        final_pnl = equity_curve[-1]["cumulative_pnl"]
-        final_equity = equity_curve[-1]["equity"]
-        print(f"\n--- PORTFOLIO ---")
-        print(f"  Starting capital:    ${ACCOUNT_SIZE_USD:.2f}")
-        print(f"  Final equity:        ${final_equity:.2f}")
-        print(f"  Net P&L:             ${final_pnl:+.2f}")
-        print(f"  Return on capital:   {final_pnl / ACCOUNT_SIZE_USD * 100:+.2f}%")
-        print(f"  Max drawdown:        {max_dd:.2f}%")
+    # Reconcile final portfolio P&L from trades directly so it always matches trades.csv.
+    final_pnl = sum(t.net_pnl_usd for t in trades)
+    final_equity = ACCOUNT_SIZE_USD + final_pnl
+    max_dd = max((p["drawdown_pct"] for p in equity_curve), default=0.0)
 
+    print(f"\n--- PORTFOLIO ---")
+    print(f"  Starting capital:    ${ACCOUNT_SIZE_USD:.2f}")
+    print(f"  Final equity:        ${final_equity:.2f}")
+    print(f"  Net P&L:             ${final_pnl:+.2f}")
+    print(f"  Return on capital:   {final_pnl / ACCOUNT_SIZE_USD * 100:+.2f}%")
+    print(f"  Max drawdown:        {max_dd:.2f}%   (mark-to-market)")
+
+    # Loss streak must be in chronological order — sort by exit_time, fall back to entry_time.
+    trades_sorted = sorted(trades, key=lambda t: t.exit_time or t.entry_time)
     streak = 0
     max_loss_streak = 0
-    for t in trades:
+    for t in trades_sorted:
         if t.net_pnl_usd <= 0:
             streak += 1
             max_loss_streak = max(max_loss_streak, streak)
@@ -710,11 +822,18 @@ def main():
         df = fetch_candles(symbol, TIMEFRAME_SECONDS, DAYS_BACK)
         raw_count = len(df)
         df = drop_incomplete_candles(df, TIMEFRAME_SECONDS)
+        if df.empty:
+            print("0 bars — skipping this symbol")
+            continue
         dropped = raw_count - len(df)
         df = add_indicators(df)
         data[symbol] = df
         suffix = f" (dropped {dropped} incomplete)" if dropped else ""
         print(f"{len(df)} bars ({df['time'].min().date()} to {df['time'].max().date()}){suffix}")
+
+    if "BTC-USD" not in data:
+        print("ERROR: BTC-USD data is required for the BTC regime filter — aborting.")
+        return
 
     print("\nRunning scanner backtest...")
     trades, equity_curve = run_backtest(data)

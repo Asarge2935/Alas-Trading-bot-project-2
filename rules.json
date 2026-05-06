@@ -7,6 +7,22 @@
     "live_universe_naming": "BTC-PERP-INTX, ETH-PERP-INTX, SOL-PERP-INTX, XRP-PERP-INTX, ADA-PERP-INTX, DOT-PERP-INTX",
     "backtest_proxy_naming": "BTC-USD, ETH-USD, ... — Coinbase Exchange public candles serve spot only"
   },
+  "live_symbols": [
+    "BTC-PERP-INTX",
+    "ETH-PERP-INTX",
+    "SOL-PERP-INTX",
+    "XRP-PERP-INTX",
+    "ADA-PERP-INTX",
+    "DOT-PERP-INTX"
+  ],
+  "backtest_symbols": [
+    "BTC-USD",
+    "ETH-USD",
+    "SOL-USD",
+    "XRP-USD",
+    "ADA-USD",
+    "DOT-USD"
+  ],
   "watchlist": [
     "BTC-PERP-INTX",
     "ETH-PERP-INTX",
@@ -18,9 +34,14 @@
   "default_timeframe": "SIX_HOUR",
   "mode": "scanner",
   "strategy": {
-    "name": "6H Scanner with Volume + BTC Regime Filter",
+    "name": "6H Trend-Pullback Scanner with Volume + BTC Regime Filter",
     "version": "v2",
-    "description": "Multi-asset scanner. Every 6H bar, evaluate all 6 assets. Take the strongest qualifying signal subject to portfolio limits."
+    "description": "Multi-asset scanner. Every closed 6H bar, evaluate all 6 assets. Take the strongest qualifying trend-pullback signal subject to portfolio limits. Long-only above EMA(50) with EMA(20) above EMA(50) and oversold RSI; mirror for shorts."
+  },
+  "safety_flags": {
+    "paper_trading_enabled": true,
+    "live_trading_enabled": false,
+    "kill_switch_required": true
   },
   "indicators": {
     "ema_50_6h": "Slow trend filter — defines regime (long-only above, short-only below)",
@@ -42,7 +63,8 @@
       "open_positions_total < 2",
       "trades_today_for_symbol < 2",
       "trades_this_week_total < 5",
-      "drawdown_pct < 15 (or in pause window)"
+      "drawdown_pct < 15 and not in_pause_window",
+      "current_date not in blackout_dates.global and not in blackout_dates[symbol]"
     ],
     "short": [
       "close < ema_50_6h",
@@ -55,12 +77,14 @@
       "open_positions_total < 2",
       "trades_today_for_symbol < 2",
       "trades_this_week_total < 5",
-      "drawdown_pct < 15 (or in pause window)"
+      "drawdown_pct < 15 and not in_pause_window",
+      "current_date not in blackout_dates.global and not in blackout_dates[symbol]"
     ]
   },
   "signal_ranking": "When multiple assets fire simultaneously, take the one with most extreme RSI (furthest from 50). If we already hold a same-direction position, the new signal must be stronger by 5+ RSI points to qualify.",
   "execution": {
     "entry_timing": "Signal forms on closed 6H bar N. Order fills at bar N+1 open.",
+    "incomplete_candle_policy": "Drop latest candle unless its full 6H period has closed.",
     "exit_logic": [
       "1. Stop loss: 2 ATR from entry (immediate market close on hit)",
       "2. Target 1: 3 ATR from entry — close 50% of position, move stop to breakeven",
@@ -89,27 +113,39 @@
     "drawdown_pause_pct": 15,
     "drawdown_pause_days": 7,
     "drawdown_stop_pct": 25,
-    "drawdown_baseline": "ACCOUNT_SIZE_USD ($500). Drawdown is measured against the running peak of ACCOUNT_SIZE_USD + cumulative_pnl, never against cumulative P&L alone."
+    "drawdown_calculation": "Drawdown must use ACCOUNT_SIZE_USD + closed_pnl + unrealized_open_pnl (mark-to-market), measured against the running peak of that mark-to-market equity. Never against closed P&L alone."
   },
   "cost_assumptions": {
     "taker_fee_pct": 0.0003,
     "min_fee_usd": 0.15,
     "slippage_normal_pct": 0.0010,
     "slippage_high_vol_pct": 0.0020,
+    "high_vol_slippage_trigger": "Use slippage_high_vol_pct when candle range exceeds 2 * atr_14.",
     "funding_drag_monthly_pct": 0.005,
-    "note": "Real funding rate modeling requires historical funding data — placeholder is a conservative flat drag."
+    "funding_drag_note": "Flat placeholder — NOT real historical funding-rate data. Real funding lookups must be wired in before live trading.",
+    "funding_partial_close_policy": "After a partial close at target 1, funding drag on the runner is computed against the remaining (half) notional, not the original full notional."
   },
-  "blackout_events": {
-    "ada": ["Midnight sidechain launches", "Hard fork dates", "Major governance votes"],
-    "xrp": ["SEC announcements", "Court ruling dates", "ETF approval news"],
-    "macro": ["FOMC meeting day", "CPI release morning", "Major NFP release"],
-    "implementation": "Manual flag in bot config — disable trading on flagged dates per asset."
+  "blackout_dates": {
+    "global": [],
+    "BTC-PERP-INTX": [],
+    "ETH-PERP-INTX": [],
+    "SOL-PERP-INTX": [],
+    "XRP-PERP-INTX": [],
+    "ADA-PERP-INTX": [],
+    "DOT-PERP-INTX": [],
+    "_format": "ISO-8601 date strings (YYYY-MM-DD) UTC. Blackout dates prevent NEW entries on flagged dates; existing positions continue to manage exits normally.",
+    "_examples": {
+      "ada": ["Midnight sidechain launches", "Hard fork dates", "Major governance votes"],
+      "xrp": ["SEC announcements", "Court ruling dates", "ETF approval news"],
+      "macro": ["FOMC meeting day", "CPI release morning", "Major NFP release"]
+    }
   },
   "deployment_gates": {
     "backtest": "12+ months of 6H data, net profit factor >= 1.5, max drawdown < 25%, max consecutive losses < 8.",
     "paper_trade": "30+ days minimum at the same parameters as backtest, with no parameter changes during paper period.",
     "live_capital_phase_1": "$50 (not $500). Hold this size for 30 days of profitable behavior before scaling.",
-    "live_capital_phase_2": "Scale only after 30 days of phase-1 live behavior matches paper-trade expectations."
+    "live_capital_phase_2": "Scale only after 30 days of phase-1 live behavior matches paper-trade expectations.",
+    "_note": "Passing the backtest only qualifies the strategy for paper trading. It does not approve live trading."
   },
   "notes": "Backtest 12+ months before any deployment. Paper trade 30+ days minimum. Live capital starts at $50, not $500. Scale only after 30 days of profitable live behavior."
 }

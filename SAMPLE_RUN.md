@@ -6,6 +6,23 @@ the user has not green-lit hitting Coinbase's public API from this
 session. Run the backtester locally and paste the summary back if
 you want a sanity check.
 
+## Important caveats — read before interpreting any result
+
+- **Spot proxy.** The backtest uses Coinbase **spot** candles
+  (`BTC-USD`, `ETH-USD`, ...) as a price proxy for the live perp series
+  (`BTC-PERP-INTX`, ...). The Coinbase Exchange public candles endpoint
+  does not serve perp data. Spot/perp basis on majors at 6H is small
+  (typically < 0.1%) but is real.
+- **Funding is a placeholder.** The funding drag in the cost model is a
+  flat -0.5%/month — **not** real historical funding-rate data. Real
+  funding lookups must be wired in before live trading.
+- **Incomplete candles are dropped.** The latest 6H candle that has not
+  yet closed is excluded before indicators are computed, so EMA / RSI /
+  ATR rolling windows never see partial data.
+- **Backtest passing does not authorize live trading.** Passing the
+  deployment gates only qualifies the strategy for **paper trading**.
+  Live capital starts at $50 after a successful 30-day paper period.
+
 ---
 
 ## Prerequisites
@@ -41,11 +58,15 @@ python backtest.py
 The script:
 
 1. Pulls 365 days of 6H candles for each of BTC, ETH, SOL, XRP, ADA, DOT
-   (300 candles per request, paginated, with a 0.3s polite delay between calls).
-2. Computes EMA(50/20), RSI(14), ATR(14), 30-day-avg ATR, and 20-bar avg volume.
-3. Runs the scanner over every 6H bar, opens / partials / closes trades.
-4. Writes `backtest_output/trades.csv` and `backtest_output/equity_curve.csv`.
-5. Prints a per-bucket and portfolio summary.
+   (300 candles per request, paginated, with a 0.3s polite delay between
+   calls and rate-limit backoff on HTTP 429).
+2. Drops any candle that has not yet closed (still-forming bar).
+3. Computes EMA(50/20), RSI(14), ATR(14), 30-day-avg ATR, and 20-bar avg
+   volume on the closed-only series.
+4. Runs the scanner over every closed 6H bar, opens / partials / closes
+   trades. Marks-to-market on every bar.
+5. Writes `backtest_output/trades.csv` and `backtest_output/equity_curve.csv`.
+6. Prints a per-bucket and portfolio summary.
 
 Expected runtime: 30–90 seconds on a typical laptop, dominated by the
 6 paginated API calls. There are roughly 5 paginated requests per asset
@@ -141,7 +162,7 @@ broken or curve-fit, not as a winning strategy.
 | Column | Meaning |
 |---|---|
 | symbol, side | trading pair, `long` / `short` |
-| signal_time | bar N close where signal formed |
+| signal_candle_time | Coinbase timestamp for the candle that produced the signal (candle START — the signal is actionable AFTER `signal_candle_time + 6h`) |
 | entry_time | bar N+1 open where order filled |
 | entry_price | fill price |
 | stop_price | initial 2 ATR stop, moves to BE after partial |
@@ -149,7 +170,7 @@ broken or curve-fit, not as a winning strategy.
 | initial_stop_distance | dollar distance from entry to initial stop |
 | notional_usd, margin_usd, leverage | sizing |
 | rsi_at_signal, atr_at_signal, btc_rsi_at_signal | snapshot at signal |
-| exit_time, exit_price_partial, exit_price_final | exits |
+| exit_time, exit_time_partial, exit_price_partial, exit_price_final | exits (partial timestamp/price populated only when target 1 fired) |
 | exit_reason | `stop_hit` / `target_2_runner_hit` / `time_stop` / `regime_flip` / `backtest_end` |
 | bars_held | full bars between entry and final exit |
 | gross_pnl_usd, fees_usd, slippage_usd, funding_usd, net_pnl_usd | P&L breakdown |
@@ -160,10 +181,10 @@ broken or curve-fit, not as a winning strategy.
 | Column | Meaning |
 |---|---|
 | time | bar timestamp (UTC) |
-| equity | account value = $500 + cumulative P&L |
+| equity | mark-to-market account value = $500 + closed P&L + unrealized open-position P&L |
 | cumulative_pnl | sum of net P&L of all closed trades up to this point |
 | open_positions | 0, 1, or 2 |
-| drawdown_pct | (peak_equity − equity) / peak_equity × 100 |
+| drawdown_pct | (peak_mtm_equity − mtm_equity) / peak_mtm_equity × 100 |
 
 ---
 
