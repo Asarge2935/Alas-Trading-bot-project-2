@@ -7,14 +7,14 @@ Reviewer pass: code review and finalization before paper trading.
 This document lists every issue found during the Phase 1–6 review of the
 materials provided in the handoff, the severity of each issue, and what
 was changed (or explicitly left alone). It is intended to be read alongside
-`backtest.py`, `rules.json`, and `docs/HANDOFF.md`.
+`backtest.py`, `rules.alas`, and `docs/HANDOFF.md`.
 
 ---
 
 ## Files reviewed
 
 - `9dfd8145-backtest_v2.py` → renamed to `backtest.py`, **modified**
-- `829691d7-rules_v2.json` → renamed to `rules.json`, **modified** (clarifications only)
+- `829691d7-rules_v2.json` → renamed to `rules.alas`, **modified** (clarifications only)
 - `bb7e939c-STRATEGY_ADA_XRP1.md` → moved to `docs/STRATEGY_ADA_XRP_LEGACY.md`, **unchanged**
 - `125947af-CLAUDE_CODE_HANDOFF_PROMPT.md` → moved to `docs/HANDOFF.md`, **unchanged**
 
@@ -67,7 +67,7 @@ and `cumulative_pnl` so you can sanity-check this manually.
 
 **Where:** original `backtest_v2.py:505-559`, `check_exit`.
 
-**What was wrong:** The strategy doc and `rules.json` list exit priority
+**What was wrong:** The strategy doc and `rules.alas` list exit priority
 as `stop > target_1 > target_2 > time_stop > regime_flip`. The code
 checked `regime_flip` inside each side branch and `time_stop` outside,
 so the actual order was `stop > target_1 > target_2 > regime_flip >
@@ -117,7 +117,7 @@ the partial — usually fine.
 
 **What was changed:** Behavior preserved (it's a reasonable conservative
 choice), but it is now documented in the `check_exit` docstring at
-`backtest.py:339-353` and called out in `rules.json` under
+`backtest.py:339-353` and called out in `rules.alas` under
 `execution.exit_priority_note`. Flagging here so you don't get surprised
 by it when reviewing trades.csv.
 
@@ -138,7 +138,7 @@ back to 50.0.
 
 ### M3. Strategy/code consistency check (Phase 4)
 
-I walked through every entry rule in `rules.json` against the code:
+I walked through every entry rule in `rules.alas` against the code:
 
 | Rule | Code reference | Match? |
 |---|---|---|
@@ -171,7 +171,7 @@ All entry conditions and exit branches are present. No silent rule drift.
 
 ### m1. ASSETS uses spot tickers as proxies for perp prices
 
-**Behavior:** `ASSETS = ["BTC-USD", "ETH-USD", ...]`. `rules.json`
+**Behavior:** `ASSETS = ["BTC-USD", "ETH-USD", ...]`. `rules.alas`
 correctly names the live perp universe as `BTC-PERP-INTX` etc.
 
 **Why it's OK:** The Coinbase Exchange public candles endpoint serves
@@ -180,7 +180,7 @@ spot only. Spot/perp basis on majors at 6H resolution is small (typically
 
 **What was added:** A header comment in `backtest.py` and a
 `_meta.live_universe_naming` / `_meta.backtest_proxy_naming` block in
-`rules.json` explaining this. **Action item for you:** when the real
+`rules.alas` explaining this. **Action item for you:** when the real
 `coinbase_exchange.py` adapter is wired up, expect the live signal RSI
 values and ATR values to differ slightly from backtest values for the
 same bar — a few percent of slippage variance is normal.
