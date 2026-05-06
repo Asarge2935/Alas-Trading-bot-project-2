@@ -9,7 +9,7 @@ Mode: Scanner — every closed 6H bar, evaluate all 6 assets, take the strongest
 This is the source of truth for the BACKTEST. Live execution is a separate
 adapter and is intentionally out of scope here.
 
-Note on tickers: rules.alas lists the live perp universe as BTC-PERP-INTX etc.
+Note on tickers: rules.json lists the live perp universe as BTC-PERP-INTX etc.
 The Coinbase Exchange public candles endpoint serves spot only, so this
 backtester uses BTC-USD, ETH-USD, ... as a price proxy for the perp series.
 The spot/perp basis is small at 6H resolution and is partly absorbed by the
@@ -37,7 +37,7 @@ from typing import Optional
 
 
 # ---------------------------------------------------------------------------
-# Config — locked to rules.alas. Do not tweak without updating both.
+# Config — locked to rules.json. Do not tweak without updating both.
 # ---------------------------------------------------------------------------
 
 ASSETS = ["BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "ADA-USD", "DOT-USD"]
@@ -462,7 +462,7 @@ def run_backtest(data_by_symbol):
 
 def check_exit(trade, bar, current_time):
     """
-    Exit priority (matches rules.alas exit_logic order):
+    Exit priority (matches rules.json exit_logic order):
         1. Stop hit (immediate market close)
         2. Target 1 hit (close 50%, move stop to breakeven, runner stays open)
         3. Target 2 hit (close runner)
@@ -511,7 +511,7 @@ def check_exit(trade, bar, current_time):
                     "reason": "target_2_runner_hit", "bars_held": int(bars_held_so_far),
                     "is_high_vol": is_high_vol}
 
-    # Priority 4: time stop (BEFORE regime flip per rules.alas)
+    # Priority 4: time stop (BEFORE regime flip per rules.json)
     if bars_held_so_far >= TIME_STOP_BARS:
         return {"exit_time": current_time, "exit_price": bar["close"],
                 "reason": "time_stop", "bars_held": int(bars_held_so_far),

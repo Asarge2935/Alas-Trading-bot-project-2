@@ -13,7 +13,7 @@ scanner across BTC, ETH, SOL, XRP, ADA, DOT.
 | File | Purpose |
 |---|---|
 | `backtest.py` | The backtester. Pulls 6H candles from Coinbase Exchange, simulates the strategy, exports CSVs and a summary report. |
-| `rules.alas` | Strategy configuration in machine-readable form (JSON content, project-specific extension). Source of truth for the (future) live bot config. |
+| `rules.json` | Strategy configuration in machine-readable form. Source of truth for the (future) live bot config. |
 | `REVIEW_NOTES.md` | Findings from the latest code review pass: critical / major / minor issues, what was fixed, what was left alone. |
 | `PRE_PAPER_TRADE_CHECKLIST.md` | The go/no-go checklist to run after a 12-month backtest, before starting paper trade. |
 | `SAMPLE_RUN.md` | How to run the backtester locally, expected output shape, common errors. |
@@ -50,6 +50,6 @@ to `main` directly.
 
 The owner has a separate long-term spot portfolio (XRP, ADA, AVAX, HYPE,
 PYTH, etc.). The bot's universe is the 6 perpetual futures listed in
-`rules.alas` and the bot's capital is strictly the $500 sandbox. The bot
+`rules.json` and the bot's capital is strictly the $500 sandbox. The bot
 must never read, place orders against, or otherwise interact with any
 spot holdings.

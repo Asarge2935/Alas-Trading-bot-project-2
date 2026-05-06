@@ -2,7 +2,7 @@
 
 > **STATUS: SUPERSEDED.** This is the original 2-asset, 4H, two-bucket
 > strategy. It has been replaced by the 6-asset 6H scanner described in
-> `rules.alas` and `backtest.py`. Kept here for historical reference only.
+> `rules.json` and `backtest.py`. Kept here for historical reference only.
 > Do not implement against this document.
 
 **Account size:** $500 (split: $250 ADA bucket, $250 XRP bucket — track separately)  

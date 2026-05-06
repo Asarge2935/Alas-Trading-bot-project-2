@@ -105,7 +105,7 @@ Open `equity_curve.csv` in a spreadsheet, plot `equity` vs `time`:
 
 ## H. Documentation is in sync
 
-- [ ] `rules.alas` and `backtest.py` constants match. Spot-check
+- [ ] `rules.json` and `backtest.py` constants match. Spot-check
       `RISK_PER_TRADE_USD`, `MAX_LEVERAGE`, `TIME_STOP_BARS`,
       `DRAWDOWN_PAUSE_PCT`, `DRAWDOWN_STOP_PCT`.
 - [ ] `docs/STRATEGY_ADA_XRP_LEGACY.md` has a clear "superseded" note at
