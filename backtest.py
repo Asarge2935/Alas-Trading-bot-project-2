@@ -125,6 +125,13 @@ def fetch_candles(product_id, granularity_seconds, days_back):
     return df
 
 
+def drop_incomplete_candles(df, timeframe_seconds):
+    """Drop the latest still-forming candle(s) so the backtester only evaluates closed bars."""
+    now = pd.Timestamp.now(tz="UTC")
+    candle_close_time = df["time"] + pd.Timedelta(seconds=timeframe_seconds)
+    return df[candle_close_time <= now].reset_index(drop=True)
+
+
 # ---------------------------------------------------------------------------
 # Indicators
 # ---------------------------------------------------------------------------
@@ -701,9 +708,13 @@ def main():
     for symbol in ASSETS:
         print(f"Fetching {symbol} ...", end=" ", flush=True)
         df = fetch_candles(symbol, TIMEFRAME_SECONDS, DAYS_BACK)
+        raw_count = len(df)
+        df = drop_incomplete_candles(df, TIMEFRAME_SECONDS)
+        dropped = raw_count - len(df)
         df = add_indicators(df)
         data[symbol] = df
-        print(f"{len(df)} bars ({df['time'].min().date()} to {df['time'].max().date()})")
+        suffix = f" (dropped {dropped} incomplete)" if dropped else ""
+        print(f"{len(df)} bars ({df['time'].min().date()} to {df['time'].max().date()}){suffix}")
 
     print("\nRunning scanner backtest...")
     trades, equity_curve = run_backtest(data)
