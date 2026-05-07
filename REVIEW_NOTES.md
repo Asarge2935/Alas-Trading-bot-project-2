@@ -6,13 +6,132 @@ This document records every issue found during review and what was
 done about it. It is intended to be read alongside `backtest.py`,
 `rules.json`, and `docs/HANDOFF.md`.
 
-There have been two review passes:
+There have been three review passes:
 
 - **First pass (2026-05-06)** — initial finalization from the handoff.
-  Documented in the body of this file.
+  Documented near the bottom of this file.
 - **Second pass (2026-05-06, later same day)** — user-driven review
   request focused on backtest realism, mark-to-market accounting, API
-  resilience, and documentation sync. Documented in the next section.
+  resilience, and documentation sync.
+- **Third pass (2026-05-07)** — first live backtest run produced 4
+  trades / 0 wins / FAIL on §A, §C, §D, §F. Funnel diagnostic identified
+  two over-restrictive filters; both removed. Documented immediately below.
+
+---
+
+## Third review pass — filter funnel diagnostic and removal (v2.1)
+
+### Trigger
+
+User ran `python backtest.py` locally for the first time on 2026-05-07
+against 2025-05-08 → 2026-05-07 Coinbase candles. Result: **4 trades total
+across 6 assets, 0 wins, longs only, all losers, net P&L −$5.66, max DD
+1.20% MTM.** Multiple checklist gates failed:
+
+- §A trades.csv ≥ 30 rows: ❌ (only 4)
+- §C net profit factor ≥ 1.5: ❌ (0.00)
+- §C trade count 30–200: ❌ (4)
+- §D ≥ 4 of 6 assets with ≥ 5 trades each: ❌ (only ETH and XRP, 2 trades each)
+- §D both long and short trades fired: ❌ (longs only)
+- §F costs 15–35% of |gross|: ❌ (~56%)
+
+### Funnel diagnostic data
+
+`verify_filter_funnel.py` was run on the same data set. Result:
+
+| Step | Bars | % of total |
+|---|---|---|
+| Total bar-asset pairs evaluated | 7962 | 100% |
+| After ATR regime gate | 7876 | 98.9% |
+| After volume filter (≥ 1.2× 20-bar avg) | 2373 | 29.8% |
+| LONG: + close > EMA50 | 1085 | 13.6% |
+| LONG: + EMA20 > EMA50 | 796 | 10.0% |
+| LONG: + RSI < 30 | 4 | 0.05% |
+| LONG: + BTC RSI ≥ 35 | 4 | 0.05% (final) |
+| SHORT: + close < EMA50 | 1288 | 16.2% |
+| SHORT: + EMA20 < EMA50 | 1142 | 14.3% |
+| SHORT: + RSI > 70 | 6 | 0.08% |
+| SHORT: + BTC RSI ≤ 65 | **0** | 0.0% (final) |
+
+Counterfactuals (signal counts under different filter configurations):
+
+| Configuration | Long | Short | Total |
+|---|---|---|---|
+| Baseline (current rules) | 4 | 0 | 4 |
+| Volume threshold 1.2× → 1.0× | 4 | 2 | 6 |
+| RSI 30/70 → 35/65 | 5 | 5 | 10 |
+| Drop BTC regime only | 4 | 6 | 10 |
+| Drop volume only | 19 | 12 | 31 |
+| **Drop volume + BTC regime** | **46** | **61** | **107** |
+
+### Diagnosis and action
+
+Two filters were responsible for the funnel collapse:
+
+**1. Volume filter (≥ 1.2× 20-bar avg) — REMOVED.**
+Structurally wrong for a pullback strategy. Pullbacks are defined by
+*fading* volume — strong hands don't unload, weak hands exit quietly.
+Requiring above-average volume on the entry candle filters out the
+genuine pullbacks and only admits flash-crash capitulation bars (where
+volume spikes). Lowering the threshold doesn't help: 1.2× → 1.0× still
+gives 4 longs because the qualifying RSI<30 readings happen on
+*below-average*-volume bars. The filter has to come out, not be tuned.
+
+**2. BTC regime filter (RSI ∈ [35, 65]) — REMOVED.**
+Killed 100% of short signals that survived the EMA + RSI > 70 gates.
+Original intent was tail-risk protection ("don't long while BTC dumps,
+don't short while BTC rips"). In practice it double-counts the per-asset
+EMA-trend filter (correlation-redundant) and is symmetric in a market
+that wasn't symmetric over the test window. Tail risk is already managed
+by the 25% drawdown stop and the per-trade 2-ATR stop — those remain.
+
+**Unchanged:** RSI 30/70 thresholds, EMA alignment, ATR regime gate,
+position sizing, all per-trade and portfolio limits, drawdown breakers,
+mark-to-market accounting, all v2 fixes from passes 1 and 2.
+
+### Implementation
+
+- `backtest.py` `evaluate_signal`: volume gate dropped, BTC-regime
+  comparison dropped from `long_ok` / `short_ok`. `btc_rsi` is still
+  computed and recorded on each Trade for diagnostic value, but no
+  longer affects entry decisions. `volume_avg_20` removed from the
+  required-NaN-check list. Constants `VOLUME_MULTIPLIER`,
+  `BTC_REGIME_RSI_LOW`, `BTC_REGIME_RSI_HIGH` kept (used by
+  `verify_filter_funnel.py`).
+- `backtest.py` `main()` print updated so it doesn't lie about which
+  filters are active.
+- `rules.json` `entry_rules` has the two lines removed; the removed
+  rules are preserved under `entry_rules._removed_in_v2_1` for audit.
+  `indicators.volume_avg_20` and `indicators.btc_rsi_14_6h` now marked
+  INFORMATIONAL ONLY. `_meta.v2.1_change` documents the rationale.
+  Strategy renamed `"6H Trend-Pullback Scanner"` (dropped the "with
+  Volume + BTC Regime Filter" suffix).
+
+### Expected effect on the next backtest
+
+Predicted from the counterfactual table:
+- ~107 signals → ~35–55 realised trades (after scanner cap, weekly
+  portfolio limit, and same-direction filter).
+- Trade count should clear §A (≥30) and §C (30–200).
+- Both directions should fire, satisfying §D's "both long and short".
+- Cost ratio should fall toward the §F band (15–35% of |gross|) as the
+  $0.15 fee minimum gets amortized across roughly 10× more trades.
+
+### What this is NOT
+
+This is not "tune until the backtest looks good." Both removals are
+motivated by diagnosed structural problems, not by chasing better
+numbers. If the rerun still produces a net profit factor < 1.0 in the
+30–55 trade range, the strategy genuinely doesn't have edge in this
+regime and we don't deploy it. That outcome is fine — the handoff was
+explicit that finding out now is better than losing money live.
+
+### Action item for the user
+
+Run `python backtest.py` again locally and upload the new `trades.csv`,
+`equity_curve.csv`, and the console summary. The §B fidelity checks and
+§A2 mark-to-market gate can now be evaluated against a meaningful
+sample.
 
 ---
 

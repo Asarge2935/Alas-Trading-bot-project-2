@@ -20,20 +20,26 @@ scanner across BTC, ETH, SOL, XRP, ADA, DOT.
 | `docs/STRATEGY_ADA_XRP_LEGACY.md` | Original 2-asset, 4H, two-bucket strategy. Superseded — kept for reference only. |
 | `docs/HANDOFF.md` | The original handoff prompt that scoped this review. |
 
-## Strategy in one paragraph
+## Strategy in one paragraph (v2.1)
 
 A 6H trend-pullback scanner. Every closed 6H bar, scan all 6 assets.
 A long fires when price is above EMA(50), EMA(20) is above EMA(50),
-RSI(14) is below 30, ATR is not in a volatility blow-off, volume
-confirms (≥1.2× 20-bar avg), and BTC isn't dumping (BTC RSI ≥ 35).
-Shorts are the mirror. Entry is at the next bar's open — no same-bar
-fills. Stop at 2 ATR. Close 50% at 3 ATR and move stop to breakeven.
-Close runner at 6 ATR or after 56 bars (14 days), whichever comes
-first. Risk is fixed at $5 per trade ($500 account, 1%). Max 2 open
-positions, 5 trades per week portfolio-wide. Drawdown 15% pauses the
-bot for 7 days, 25% stops it entirely; drawdown is measured on
-**mark-to-market** equity (closed P&L plus unrealized open P&L), so
-open losers can't hide behind closed winners.
+RSI(14) is below 30, and ATR is not in a volatility blow-off. Shorts
+are the mirror. Entry is at the next bar's open — no same-bar fills.
+Stop at 2 ATR. Close 50% at 3 ATR and move stop to breakeven. Close
+runner at 6 ATR or after 56 bars (14 days), whichever comes first.
+Risk is fixed at $5 per trade ($500 account, 1%). Max 2 open positions,
+5 trades per week portfolio-wide. Drawdown 15% pauses the bot for 7
+days, 25% stops it entirely; drawdown is measured on **mark-to-market**
+equity (closed P&L plus unrealized open P&L), so open losers can't
+hide behind closed winners.
+
+> **v2.1 change:** the volume filter (≥ 1.2× 20-bar avg) and the BTC
+> regime filter (RSI 35–65) were removed in v2.1 after a funnel
+> diagnostic showed they were over-restrictive — the volume filter
+> inverted the pullback premise (pullbacks are low-volume by nature)
+> and the BTC regime gate killed 100% of short signals over the test
+> window. See `REVIEW_NOTES.md` "Third pass" for data and reasoning.
 
 ## Backtest realism notes
 

@@ -330,36 +330,41 @@ def size_position(entry_price, stop_price):
 # ---------------------------------------------------------------------------
 
 def evaluate_signal(row, btc_row):
-    required = ["ema_50", "ema_20", "rsi_14", "atr_14", "atr_regime_avg",
-                "volume_avg_20"]
+    """
+    Strategy v2.1: volume and BTC-regime filters removed after the funnel
+    diagnostic (verify_filter_funnel.py) showed the volume gate inverted
+    the pullback premise (pullbacks are low-volume by nature) and the BTC
+    regime gate killed 100% of qualifying short signals over the test
+    window. See REVIEW_NOTES.md "Third pass".
+
+    VOLUME_MULTIPLIER and BTC_REGIME_RSI_LOW/HIGH constants are kept for
+    traceability and for verify_filter_funnel.py, but are no longer
+    consulted as entry gates.
+    """
+    required = ["ema_50", "ema_20", "rsi_14", "atr_14", "atr_regime_avg"]
     for col in required:
         if pd.isna(row[col]):
             return None
 
     if row["atr_14"] > ATR_REGIME_MULTIPLE * row["atr_regime_avg"]:
         return None
-    if row["volume"] < VOLUME_MULTIPLIER * row["volume_avg_20"]:
-        return None
 
-    # Treat missing/NaN BTC RSI as neutral (50) — never block trades because BTC bar is unavailable
+    # BTC RSI is recorded on the trade for diagnostics; it does NOT gate entry.
     if btc_row is None or pd.isna(btc_row["rsi_14"]):
         btc_rsi = 50.0
     else:
         btc_rsi = btc_row["rsi_14"]
-    btc_extreme_low = btc_rsi < BTC_REGIME_RSI_LOW
-    btc_extreme_high = btc_rsi > BTC_REGIME_RSI_HIGH
+    _ = btc_rsi  # informational only — kept so callers retain a snapshot
 
     long_ok = (
         row["close"] > row["ema_50"]
         and row["ema_20"] > row["ema_50"]
         and row["rsi_14"] < RSI_LONG_MAX
-        and not btc_extreme_low
     )
     short_ok = (
         row["close"] < row["ema_50"]
         and row["ema_20"] < row["ema_50"]
         and row["rsi_14"] > RSI_SHORT_MIN
-        and not btc_extreme_high
     )
 
     if long_ok and short_ok:
@@ -812,8 +817,8 @@ def main():
     print(f"Backtest config: {DAYS_BACK} days, 6H bars, {len(ASSETS)} assets")
     print(f"Assets: {', '.join(ASSETS)}")
     print(f"Indicators: EMA{EMA_FAST}/{EMA_SLOW}, RSI{RSI_PERIOD}, ATR{ATR_PERIOD}, Vol{VOL_AVG_PERIOD}")
-    print(f"Filters: BTC regime ({BTC_REGIME_RSI_LOW}-{BTC_REGIME_RSI_HIGH}), "
-          f"volume >= {VOLUME_MULTIPLIER}x avg")
+    print("Filters: ATR regime gate only "
+          "(volume and BTC-RSI gates disabled — see REVIEW_NOTES \"Third pass\")")
     print()
 
     data = {}

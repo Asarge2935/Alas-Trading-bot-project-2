@@ -80,7 +80,7 @@ for 365 days at 6H, so about 30 HTTP calls total.
 Backtest config: 365 days, 6H bars, 6 assets
 Assets: BTC-USD, ETH-USD, SOL-USD, XRP-USD, ADA-USD, DOT-USD
 Indicators: EMA20/50, RSI14, ATR14, Vol20
-Filters: BTC regime (35-65), volume >= 1.2x avg
+Filters: ATR regime gate only (volume and BTC-RSI gates disabled — see REVIEW_NOTES "Third pass")
 
 Fetching BTC-USD ... 1460 bars (2025-05-06 to 2026-05-06)
 Fetching ETH-USD ... 1460 bars (2025-05-06 to 2026-05-06)
