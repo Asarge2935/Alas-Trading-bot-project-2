@@ -92,25 +92,43 @@ EQUITY_CSV = os.path.join(OUTPUT_DIR, "equity_curve.csv")
 USER_AGENT = "AlasTradingBotBacktester/1.0"
 
 
-def safe_get(url, params, max_retries=5):
-    """HTTP GET with rate-limit backoff and bounded retries."""
+def safe_get(url, params, max_retries=7):
+    """
+    HTTP GET with backoff on rate-limit (429), server errors (5xx), and
+    transient network errors (connection reset, DNS, timeout). Bounded
+    retries with exponential backoff capped around 60s.
+    """
     headers = {"User-Agent": USER_AGENT}
     last_response = None
+    last_exception = None
 
     for attempt in range(max_retries):
-        r = requests.get(url, params=params, headers=headers, timeout=15)
-        last_response = r
+        sleep_time = min(60.0, 0.5 * (2 ** attempt))
+        try:
+            r = requests.get(url, params=params, headers=headers, timeout=20)
+        except requests.exceptions.RequestException as exc:
+            last_exception = exc
+            print(f"  [retry {attempt + 1}/{max_retries}] network error: {exc} "
+                  f"— sleeping {sleep_time:.1f}s")
+            time.sleep(sleep_time)
+            continue
 
-        if r.status_code == 429:
-            sleep_time = 0.5 * (2 ** attempt)
+        last_response = r
+        last_exception = None
+
+        if r.status_code == 429 or 500 <= r.status_code < 600:
+            print(f"  [retry {attempt + 1}/{max_retries}] HTTP {r.status_code} "
+                  f"— sleeping {sleep_time:.1f}s")
             time.sleep(sleep_time)
             continue
 
         r.raise_for_status()
         return r
 
-    last_response.raise_for_status()
-    return last_response
+    if last_response is not None:
+        last_response.raise_for_status()
+        return last_response
+    raise last_exception
 
 
 def fetch_candles(product_id, granularity_seconds, days_back):
