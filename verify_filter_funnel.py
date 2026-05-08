@@ -53,7 +53,6 @@ def main():
     cf_no_atr_long = cf_no_atr_short = 0
     cf_no_vol_no_btc_long = cf_no_vol_no_btc_short = 0
     cf_vol_10x_long = cf_vol_10x_short = 0   # volume threshold relaxed to 1.0x
-    cf_rsi_3565_long = cf_rsi_3565_short = 0  # RSI thresholds relaxed to 35/65
 
     required_cols = ["ema_50", "ema_20", "rsi_14", "atr_14",
                      "atr_regime_avg", "volume_avg_20"]
@@ -81,13 +80,11 @@ def main():
             close_above = row["close"] > row["ema_50"]
             ema20_above = row["ema_20"] > row["ema_50"]
             rsi_below_30 = row["rsi_14"] < bt.RSI_LONG_MAX
-            rsi_below_35 = row["rsi_14"] < 35
             btc_long_ok = btc_rsi >= bt.BTC_REGIME_RSI_LOW
 
             close_below = row["close"] < row["ema_50"]
             ema20_below = row["ema_20"] < row["ema_50"]
             rsi_above_70 = row["rsi_14"] > bt.RSI_SHORT_MIN
-            rsi_above_65 = row["rsi_14"] > 65
             btc_short_ok = btc_rsi <= bt.BTC_REGIME_RSI_HIGH
 
             # ---- cumulative funnel (in evaluate_signal order) ----
@@ -148,13 +145,6 @@ def main():
                 cf_vol_10x_long += 1
             if atr_ok and vol_ok_10x and short_core and btc_short_ok:
                 cf_vol_10x_short += 1
-            # RSI thresholds relaxed to 35/65
-            long_core_3565 = close_above and ema20_above and rsi_below_35
-            short_core_3565 = close_below and ema20_below and rsi_above_65
-            if atr_ok and vol_ok and long_core_3565 and btc_long_ok:
-                cf_rsi_3565_long += 1
-            if atr_ok and vol_ok and short_core_3565 and btc_short_ok:
-                cf_rsi_3565_short += 1
 
     # ---- print ----
     n = total_bar_assets
@@ -171,23 +161,27 @@ def main():
     print("  LONG path:")
     print(f"    + close > EMA50:           {L_close:>6} ({p(L_close)})")
     print(f"    + EMA20 > EMA50:           {L_ema:>6} ({p(L_ema)})")
-    print(f"    + RSI < 30:                {L_rsi:>6} ({p(L_rsi)})")
-    print(f"    + BTC RSI >= 35:           {L_btc:>6} ({p(L_btc)})  <-- final long signal count")
+    print(f"    + RSI < {bt.RSI_LONG_MAX}:                {L_rsi:>6} ({p(L_rsi)})")
+    print(f"    + BTC RSI >= 35:           {L_btc:>6} ({p(L_btc)})  <-- v2.0 final long count")
     print()
     print("  SHORT path:")
     print(f"    + close < EMA50:           {S_close:>6} ({p(S_close)})")
     print(f"    + EMA20 < EMA50:           {S_ema:>6} ({p(S_ema)})")
-    print(f"    + RSI > 70:                {S_rsi:>6} ({p(S_rsi)})")
-    print(f"    + BTC RSI <= 65:           {S_btc:>6} ({p(S_btc)})  <-- final short signal count")
+    print(f"    + RSI > {bt.RSI_SHORT_MIN}:                {S_rsi:>6} ({p(S_rsi)})")
+    print(f"    + BTC RSI <= 65:           {S_btc:>6} ({p(S_btc)})  <-- v2.0 final short count")
     print()
     print("=== COUNTERFACTUALS (signal counts under different filter configs) ===")
-    print(f"  Baseline (current rules.json):       long={cf_baseline_long:>5}, short={cf_baseline_short:>5}")
-    print(f"  Drop volume filter entirely:         long={cf_no_vol_long:>5}, short={cf_no_vol_short:>5}")
-    print(f"  Drop BTC regime filter entirely:     long={cf_no_btc_long:>5}, short={cf_no_btc_short:>5}")
-    print(f"  Drop ATR regime filter entirely:     long={cf_no_atr_long:>5}, short={cf_no_atr_short:>5}")
-    print(f"  Drop volume + BTC:                   long={cf_no_vol_no_btc_long:>5}, short={cf_no_vol_no_btc_short:>5}")
-    print(f"  Volume threshold 1.2x -> 1.0x:       long={cf_vol_10x_long:>5}, short={cf_vol_10x_short:>5}")
-    print(f"  RSI thresholds 30/70 -> 35/65:       long={cf_rsi_3565_long:>5}, short={cf_rsi_3565_short:>5}")
+    print(f"  Live baseline (v2.2):                          long={cf_no_vol_no_btc_long:>5}, short={cf_no_vol_no_btc_short:>5}")
+    print(f"  v2.0 reconstruction (volume + BTC re-applied): long={cf_baseline_long:>5}, short={cf_baseline_short:>5}")
+    print(f"  Drop volume filter entirely (vs v2.0):         long={cf_no_vol_long:>5}, short={cf_no_vol_short:>5}")
+    print(f"  Drop BTC regime filter entirely (vs v2.0):     long={cf_no_btc_long:>5}, short={cf_no_btc_short:>5}")
+    print(f"  Drop ATR regime filter entirely (vs v2.0):     long={cf_no_atr_long:>5}, short={cf_no_atr_short:>5}")
+    print(f"  Volume threshold 1.2x -> 1.0x (vs v2.0):       long={cf_vol_10x_long:>5}, short={cf_vol_10x_short:>5}")
+    print()
+    print("Note: Live baseline matches what evaluate_signal does today (ATR + EMA")
+    print("alignment + RSI<{}/RSI>{}). v2.0 reconstruction adds volume + BTC gates".format(bt.RSI_LONG_MAX, bt.RSI_SHORT_MIN))
+    print("on top of that, for historical comparison. The 'Drop X' lines are deltas")
+    print("relative to v2.0, not relative to the live baseline.")
     print()
     print("=== HOW TO READ ===")
     print("These are SIGNAL counts (qualifying bar-asset pairs across all 6 assets,")
