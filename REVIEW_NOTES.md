@@ -350,6 +350,11 @@ back to 50.0.
 
 ### M3. Strategy/code consistency check (Phase 4)
 
+> **Historical record from the first pass.** Reflects v2.0 rules and
+> first-pass line numbers. The current rules are v2.2 (see "Third
+> review pass" at the top of this document for the diff). This table
+> is preserved as an audit artifact, not as a current claim.
+
 I walked through every entry rule in `rules.json` against the code:
 
 | Rule | Code reference | Match? |
