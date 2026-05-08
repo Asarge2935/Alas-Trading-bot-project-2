@@ -47,9 +47,9 @@ For each of 10 random trades, confirm:
       **next** 6H bar's open. They should be exactly 6 hours apart.
 - [ ] `entry_price` matches the next bar's open price for that symbol.
 - [ ] For long trades: signal candle close > `ema_50`,
-      `ema_20 > ema_50`, and `rsi_at_signal < 30`.
+      `ema_20 > ema_50`, and `rsi_at_signal < 35` (v2.2 threshold).
 - [ ] For short trades: signal candle close < `ema_50`,
-      `ema_20 < ema_50`, and `rsi_at_signal > 70`.
+      `ema_20 < ema_50`, and `rsi_at_signal > 65` (v2.2 threshold).
 - [ ] `stop_price` is exactly `2 × atr_at_signal` from `entry_price` in
       the correct direction.
 - [ ] `target_1_price` is exactly `3 × atr_at_signal` from entry.

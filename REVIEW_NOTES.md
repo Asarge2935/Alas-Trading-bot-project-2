@@ -133,6 +133,32 @@ Run `python backtest.py` again locally and upload the new `trades.csv`,
 §A2 mark-to-market gate can now be evaluated against a meaningful
 sample.
 
+### v2.2 follow-up — RSI thresholds 30/70 → 35/65
+
+User-driven decision after reviewing the v2.1 outlook. Even with volume
+and BTC filters removed, the funnel projected only ~25–30 short signals
+across the year because RSI > 70 on 6H is rare in any regime. To bring
+the trade count comfortably into the §C 30–200 range, RSI thresholds
+were widened:
+
+- `RSI_LONG_MAX`: 30 → **35**
+- `RSI_SHORT_MIN`: 70 → **65**
+
+**Justification.** 30/70 on a 6H timeframe captures only the deepest
+pullbacks; 35/65 captures normal mid-pullbacks, which is closer to the
+strategy's pullback-entry intent. This is a single, hypothesis-motivated
+change, not iterative tuning.
+
+**Unchanged in v2.2.** EMA alignment, ATR regime gate, position sizing,
+all per-trade and portfolio limits, drawdown breakers, mark-to-market
+accounting, all v2.0/v2.1 fixes.
+
+**Expected effect.** Roughly 2× the v2.1 signal count → realised trades
+likely 50–100 over 12 months. §A and §C trade-count gates should clear
+comfortably. Whether profit factor lands above or below 1.0 is the
+actual edge test; that question is for the next backtest output to
+answer, not for further parameter tuning.
+
 ---
 
 ## Second review pass — applied

@@ -1,12 +1,13 @@
 {
   "_meta": {
     "project": "Alas Trading Bot",
-    "version": "v2.1",
+    "version": "v2.2",
     "source_of_truth_for": "live bot config",
     "code_constants_locked_to": "backtest.py — keep these two files in sync",
     "live_universe_naming": "BTC-PERP-INTX, ETH-PERP-INTX, SOL-PERP-INTX, XRP-PERP-INTX, ADA-PERP-INTX, DOT-PERP-INTX",
     "backtest_proxy_naming": "BTC-USD, ETH-USD, ... — Coinbase Exchange public candles serve spot only",
-    "v2.1_change": "Volume filter (>=1.2x avg) and BTC regime filter (RSI 35-65) removed after the funnel diagnostic showed they were collapsing the signal funnel by 90%+. See REVIEW_NOTES.md 'Third pass' for data and reasoning. RSI 30/70, EMA alignment, ATR regime, position sizing, and all risk limits unchanged."
+    "v2.1_change": "Volume filter (>=1.2x avg) and BTC regime filter (RSI 35-65) removed after the funnel diagnostic showed they were collapsing the signal funnel by 90%+. See REVIEW_NOTES.md 'Third pass' for data and reasoning. RSI 30/70, EMA alignment, ATR regime, position sizing, and all risk limits unchanged.",
+    "v2.2_change": "RSI thresholds loosened from 30/70 to 35/65 to bring trade count into the 30-200 range required by §A and §C of the checklist. Decided after v2.1 still projected only ~25-30 signals over 365 days even with volume + BTC filters disabled. EMA alignment, ATR regime, position sizing, and all risk limits unchanged."
   },
   "live_symbols": [
     "BTC-PERP-INTX",
@@ -36,8 +37,8 @@
   "mode": "scanner",
   "strategy": {
     "name": "6H Trend-Pullback Scanner",
-    "version": "v2.1",
-    "description": "Multi-asset scanner. Every closed 6H bar, evaluate all 6 assets. Take the strongest qualifying trend-pullback signal subject to portfolio limits. Long-only above EMA(50) with EMA(20) above EMA(50) and oversold RSI; mirror for shorts. Volume and BTC-regime filters were removed in v2.1 after the funnel diagnostic showed they were over-restrictive in the test window — see _meta.v2.1_change."
+    "version": "v2.2",
+    "description": "Multi-asset scanner. Every closed 6H bar, evaluate all 6 assets. Take the strongest qualifying trend-pullback signal subject to portfolio limits. Long-only above EMA(50) with EMA(20) above EMA(50) and RSI < 35; mirror for shorts (RSI > 65). Volume and BTC-regime filters were removed in v2.1; RSI thresholds widened from 30/70 to 35/65 in v2.2 — see _meta.v2.1_change and _meta.v2.2_change."
   },
   "safety_flags": {
     "paper_trading_enabled": true,
@@ -47,7 +48,7 @@
   "indicators": {
     "ema_50_6h": "Slow trend filter — defines regime (long-only above, short-only below)",
     "ema_20_6h": "Fast momentum confirmation — must align with EMA(50) direction",
-    "rsi_14_6h": "Entry trigger — wide thresholds (30/70) for slower timeframe",
+    "rsi_14_6h": "Entry trigger — wide thresholds (35/65 in v2.2; was 30/70 in v2.0/v2.1) for slower timeframe",
     "atr_14_6h": "Volatility gate and stop sizing",
     "volume_avg_20": "INFORMATIONAL ONLY in v2.1 (computed by add_indicators, not used as an entry gate). Diagnostic tools still reference it. See _meta.v2.1_change.",
     "btc_rsi_14_6h": "INFORMATIONAL ONLY in v2.1 (recorded on each Trade for analysis, not used as an entry gate). See _meta.v2.1_change."
@@ -56,7 +57,7 @@
     "long": [
       "close > ema_50_6h",
       "ema_20_6h > ema_50_6h",
-      "rsi_14_6h < 30",
+      "rsi_14_6h < 35",
       "atr_14_6h < 2.0 * atr_30day_avg",
       "no_open_position_on_this_symbol",
       "open_positions_total < 2",
@@ -68,7 +69,7 @@
     "short": [
       "close < ema_50_6h",
       "ema_20_6h < ema_50_6h",
-      "rsi_14_6h > 70",
+      "rsi_14_6h > 65",
       "atr_14_6h < 2.0 * atr_30day_avg",
       "no_open_position_on_this_symbol",
       "open_positions_total < 2",
@@ -81,6 +82,10 @@
       "volume >= 1.2 * volume_avg_20",
       "btc_rsi_14_6h >= 35 (longs)",
       "btc_rsi_14_6h <= 65 (shorts)"
+    ],
+    "_changed_in_v2_2": [
+      "rsi_14_6h < 30 (longs) -> rsi_14_6h < 35",
+      "rsi_14_6h > 70 (shorts) -> rsi_14_6h > 65"
     ]
   },
   "signal_ranking": "When multiple assets fire simultaneously, take the one with most extreme RSI (furthest from 50). If we already hold a same-direction position, the new signal must be stronger by 5+ RSI points to qualify.",
