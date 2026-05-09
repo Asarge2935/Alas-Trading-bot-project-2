@@ -42,7 +42,7 @@ from typing import Optional
 
 ASSETS = ["BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "ADA-USD", "DOT-USD"]
 TIMEFRAME_SECONDS = 21600
-DAYS_BACK = 365
+DAYS_BACK = 2190                 # ~6 years; option 2 regime-dependence test
 BARS_PER_DAY = 86400 // TIMEFRAME_SECONDS
 
 EMA_SLOW = 50
