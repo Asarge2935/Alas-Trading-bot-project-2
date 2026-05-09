@@ -1,5 +1,6 @@
 # Backtest output (generated locally, do not commit)
 backtest_output/
+breakout_output/
 
 # Python
 __pycache__/

@@ -6,16 +6,109 @@ This document records every issue found during review and what was
 done about it. It is intended to be read alongside `backtest.py`,
 `rules.json`, and `docs/HANDOFF.md`.
 
-There have been three review passes:
+There have been three review passes on the original strategy plus a
+strategic redesign:
 
 - **First pass (2026-05-06)** — initial finalization from the handoff.
   Documented near the bottom of this file.
-- **Second pass (2026-05-06, later same day)** — user-driven review
-  request focused on backtest realism, mark-to-market accounting, API
-  resilience, and documentation sync.
-- **Third pass (2026-05-07)** — first live backtest run produced 4
-  trades / 0 wins / FAIL on §A, §C, §D, §F. Funnel diagnostic identified
-  two over-restrictive filters; both removed. Documented immediately below.
+- **Second pass (2026-05-06)** — backtest realism, mark-to-market,
+  API resilience, doc sync.
+- **Third pass (2026-05-07)** — first live backtest produced 4 trades.
+  Funnel diagnostic identified two over-restrictive filters; removed
+  in v2.1 and RSI thresholds widened in v2.2.
+- **Phase 1 redesign (2026-05-08)** — v2.2 1-year and 3-year backtests
+  both produced PF 0.52–0.54 across regimes. Verdict: no edge in this
+  shape. Strategy redesigned from scratch as a 1D BTC-regime
+  volatility breakout in a separate file `breakout_backtest.py`.
+  Documented immediately below.
+
+---
+
+## Phase 1 — strategy redesign (1D volatility breakout)
+
+### Trigger
+
+After v2.2 produced a regime-independent verdict of "no edge" (PF 0.52
+across 94 trades and ~3 years of multi-regime data), the strategy was
+abandoned in place. v2.2 stays in the repo as the archived failed
+experiment. The user spec'd a fundamentally different strategy and
+chose to start with a single setup before adding more.
+
+### Spec source
+
+User-provided design, locked in 2026-05-08:
+
+- 1D timeframe (vs 6H) — 4× lower per-trade fee exposure
+- BTC, ETH, SOL only (Phase 1 majors); ADA / XRP / DOT only added if
+  majors prove edge
+- BTC trend regime: longs only when BTC close > BTC EMA50, shorts only
+  when BTC close < BTC EMA50
+- Compression on the bar BEFORE the breakout: ATR(14) < 0.7 × ATR(60)
+- Breakout: close clears prior 20-bar high/low by ≥ 0.1 × ATR(14)
+- Volume confirmation: volume ≥ 1.2 × 20-bar average
+- Structure stop: prior 20-bar low (long) / high (short)
+- Exits: partial 50% at +2R, BE stop, then chandelier 3 × ATR with BE
+  as floor; time stop 20 daily bars
+- Risk: same $5/trade, max 2 open, max 5/week, drawdown 15%/25%
+- Cooldown: 5 daily bars on a symbol after a clean stop-out (no partial)
+- Skip guards: stop_distance_pct > 20%, notional < $25
+- Setup tagging: every trade carries `setup_type = "breakout"` so
+  Phase 2/3 setups (failed-breakout, flush) get separate attribution
+- No regime-flip exit (chandelier handles reversals)
+- Validation gates: PF ≥ 1.3, avg R > 0, no single asset > 50% of |net
+  P&L|, ≥30 trades over 3 years, max consec losses < 8
+
+### Defaults locked in (the four ambiguities from the planning chat)
+
+1. **Structure stop placement** — `min(low) / max(high) of previous 20
+   bars` (Donchian range edge). Wide stops are acceptable; fixed-dollar
+   risk just shrinks the notional.
+2. **Compression timing** — checked on the bar BEFORE the breakout
+   (`prev_row["compression_ratio"] < 0.7`). Checking on the breakout
+   bar itself would reject the very expansion the strategy wants.
+3. **Chandelier + BE composition** — `current_stop = max(BE,
+   chandelier)` for longs, `min(BE, chandelier)` for shorts. BE is
+   the floor, chandelier is the profit ratchet. Stops never move
+   backward.
+4. **Volume filter rehabilitation** — same 1.2× threshold that was
+   wrong for v2.2's pullback strategy is correct for breakouts (low-
+   volume breakouts are notoriously fakey). Same number, opposite role.
+
+### Files
+
+- `breakout_backtest.py` — new, self-contained, ~530 lines. Imports
+  cost / fetch / sizing / MTM helpers from `backtest.py`; defines its
+  own indicators, signal, exit, trade dataclass, and run loop.
+- `verify_offline_breakout.py` — new, ~190 lines. Synthetic-data gate
+  harness. Confirms before any live run that the pipeline holds:
+  CSVs written, P&L reconciles, MTM applied, drawdown non-negative,
+  trade limits respected, every trade tagged `setup_type="breakout"`,
+  cooldown invariant respected after clean stop-outs.
+
+### Out of scope for Phase 1
+
+- Phase 2 (failed-breakout) and Phase 3 (flush / compression) setups
+- Paper trader (`paper_trader.py`) — built only after Phase 1 passes
+- Coinbase live adapter — built only before live capital, not now
+- Any tuning of v2.2's RSI/EMA/ATR knobs (explicit user "do not")
+- Building all 4 setups at once (explicit user "do not")
+- Forcing 6 assets when 3 suffice (explicit user "do not")
+
+### Action item for the user
+
+```bash
+cd Alas-Trading-bot-project-2
+git pull
+python3 verify_offline_breakout.py     # offline gate, ~10s, no network
+python3 breakout_backtest.py           # ~2-3 min, fetches Coinbase 1D
+ls breakout_output/                    # confirms trades.csv + equity_curve.csv
+```
+
+If the live run passes the printed Phase 1 validation gates → proceed
+to Phase 2 (add failed-breakout as a separate `setup_type`). If it
+fails → user decides between Phase 1 alternative (4H liquidation
+flush), Phase 1 with a different breakout config, or stopping the
+strategy family.
 
 ---
 
