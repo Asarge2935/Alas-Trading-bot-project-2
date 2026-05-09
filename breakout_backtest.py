@@ -10,9 +10,12 @@ Entry:
       - BTC close > BTC EMA50 (regime)
       - prior bar's ATR(14) < 0.7 × prior bar's ATR(60) (compression first)
       - close > prior 20-bar high + 0.1 × ATR(14) (breakout with ATR buffer)
-      - volume >= 1.2 × 20-bar average volume (participation)
     Short: mirror.
     Entry fills at next daily open after the signal candle closes.
+
+    Volume gate (originally `volume >= 1.2 × volume_avg_20`) was DISABLED
+    in path B1 (2026-05-09) after the original config produced only 5
+    trades over 3 years. See REVIEW_NOTES.md "Phase 1 — B1 relaxation".
 
 Stop & sizing:
     Initial stop = min(low) / max(high) of previous 20 bars (Donchian range edge).
@@ -234,10 +237,17 @@ def evaluate_breakout_signal(row, prev_row, btc_row):
 
     Pre-conditions (NaN guard): all needed indicator columns must be populated
     on both the current and prior row.
+
+    NOTE — volume gate disabled (path B1, 2026-05-09). The first 3-year
+    breakout backtest produced only 5 trades; the conjunction of compression
+    + breakout + 1.2x volume + BTC regime fired ~0.2% of bar-asset-pairs,
+    too rare to evaluate edge. The volume gate was the highest-impact
+    single relaxation. The constant VOLUME_MULTIPLIER and the
+    volume_avg_20 indicator column are retained for traceability and in
+    case the gate is reinstated.
     """
     required_current = [
-        "close", "volume", "atr_14", "prior_high_20", "prior_low_20",
-        "volume_avg_20",
+        "close", "atr_14", "prior_high_20", "prior_low_20",
     ]
     required_prev = ["compression_ratio"]
     required_btc = ["close", "ema_50"]
@@ -258,9 +268,7 @@ def evaluate_breakout_signal(row, prev_row, btc_row):
     if prev_row["compression_ratio"] >= COMPRESSION_RATIO:
         return None
 
-    # 2. Volume confirmation on the breakout bar.
-    if row["volume"] < VOLUME_MULTIPLIER * row["volume_avg_20"]:
-        return None
+    # 2. Volume confirmation — DISABLED in B1. See docstring.
 
     btc_above = btc_row["close"] > btc_row["ema_50"]
     btc_below = btc_row["close"] < btc_row["ema_50"]

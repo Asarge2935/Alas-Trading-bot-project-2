@@ -32,13 +32,19 @@ its backtest gates; retained for audit.
 A daily-bar volatility breakout on BTC, ETH, and SOL only. Long signals
 fire when BTC's daily close is above its 50-day EMA, the asset's prior
 bar was in compression (ATR(14) < 0.7 × ATR(60)), and the current bar
-closes above the previous 20-bar high by at least 0.1 × ATR(14) on
-≥1.2× average volume. Shorts mirror with BTC below its EMA50 and a
-20-bar low breakdown. Entry at the next daily open. Stop at the
-opposite edge of the prior 20-bar range (Donchian-style). Partial 50%
-at +2R; runner trails on a chandelier exit (highest-high − 3 × ATR for
-longs) with breakeven as a floor. Time stop at 20 daily bars. After a
-clean stop-out (no partial fired), that symbol is on a 5-bar cooldown.
+closes above the previous 20-bar high by at least 0.1 × ATR(14).
+Shorts mirror with BTC below its EMA50 and a 20-bar low breakdown.
+Entry at the next daily open. Stop at the opposite edge of the prior
+20-bar range (Donchian-style). Partial 50% at +2R; runner trails on a
+chandelier exit (highest-high − 3 × ATR for longs) with breakeven as
+a floor. Time stop at 20 daily bars. After a clean stop-out (no partial
+fired), that symbol is on a 5-bar cooldown.
+
+> **B1 relaxation (2026-05-09):** the original spec included a
+> `volume ≥ 1.2 × 20-bar avg` confirmation. The first 3-year live run
+> produced only 5 trades; the volume gate was the highest-impact
+> single relaxation and was removed. See `REVIEW_NOTES.md` "Phase 1 —
+> B1 relaxation".
 
 Validation gates (user-stated): PF ≥ 1.3, avg R > 0, no single asset >
 50% of net P&L, ≥ 30 trades over 3 years, max consecutive losses < 8.

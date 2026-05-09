@@ -110,6 +110,45 @@ fails → user decides between Phase 1 alternative (4H liquidation
 flush), Phase 1 with a different breakout config, or stopping the
 strategy family.
 
+### Phase 1 — B1 relaxation (2026-05-09)
+
+**First live run produced only 5 trades over 3 years × 3 assets.**
+PF 0.00, avg R −0.35R, 5 of 5 losers, max consecutive losses 5. Three
+of the five trades exited with R-multiples between −0.06 and −0.27 —
+too small for clean stop hits, almost certainly time-stopped after
+20 days with the breakout failing to follow through.
+
+**Diagnosis: sample-size problem, not strategy verdict.** 5 trades is
+statistically meaningless — same shape as v2.0's failure mode.
+Estimated signal rate of the original config was ~0.2% of bar-asset
+pairs (compression × breakout × 1.2× volume × BTC regime). To clear
+the §C 30-trade gate we need ~3× more signals.
+
+**Decision: path B1 — drop the volume gate entirely.** Single
+targeted change. The volume gate was the highest-impact single
+relaxation: it filtered ~70% of bars on its own, so removing it
+should produce roughly 3× more signals → ~15–25 trades over 3 years.
+That should clear or come close to the 30-trade gate and finally let
+us evaluate whether the breakout idea has edge.
+
+**Implementation:**
+- `breakout_backtest.py` `evaluate_breakout_signal`: removed the
+  `volume < 1.2 × volume_avg_20` check. `VOLUME_MULTIPLIER` constant
+  and `volume_avg_20` indicator column retained for traceability /
+  optional re-enable.
+- File docstring updated.
+- `README.md` strategy paragraph updated with a B1 relaxation note.
+
+**Stated rule for what comes next:** **one change, run, take the
+verdict, no further loosening.** If the post-B1 run still fails the
+gates with a 15+ trade sample, the strategy doesn't have edge in
+this regime → move to 4H liquidation flush per the original spec.
+
+**Unchanged in B1:** EMA50 BTC regime filter, compression threshold
+(0.7), breakout buffer (0.1 × ATR), structure stop at the prior
+20-bar range edge, partial+chandelier+time-stop exits, all risk
+limits, drawdown breakers, cooldown after clean stop-outs.
+
 ---
 
 ## Third review pass — filter funnel diagnostic and removal (v2.1)
