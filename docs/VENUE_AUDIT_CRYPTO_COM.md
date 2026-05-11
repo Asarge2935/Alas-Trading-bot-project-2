@@ -212,6 +212,122 @@ To be filled in once Blockers A/B/C resolve.
 
 ---
 
+## 11. US (Toledo, Ohio) findings — added 2026-05-11
+
+User confirmed: jurisdiction is **United States, Ohio**. They have
+funds on "Crypto.com" but have not confirmed which product. We do not
+assume.
+
+### What the public record says about Crypto.com in the US
+
+There are **three distinct Crypto.com products** for a US user, and
+they are not interchangeable:
+
+| Product | URL pattern | US availability | API for bot use |
+|---|---|---|---|
+| **Crypto.com App** (retail) | `crypto.com/us/app`, mobile app | Yes, in most US states including Ohio | Limited. The international Exchange v1 API documented above is **not** the App's API. App's programmatic surface is much narrower; no perps. |
+| **Crypto.com Exchange** (international, the API audited in §1–§9) | `exchange.crypto.com` | **No.** Wound down US institutional access on 2023-06-21. US retail was never on it. | Full v1 API exists but is **not accessible to a US-resident account.** |
+| **Crypto.com Derivatives North America (CDNA)** | separate signup; CFTC-regulated entity | Yes, in eligible states (Ohio status: needs confirmation per CDNA terms). Margined perps approved by CFTC 2025-09-26. | Separate API surface from international Exchange. **Parity with Exchange v1 API not confirmed.** |
+
+### Implication
+
+The most likely state of the world for this user is:
+
+> Funds are on **Crypto.com App** (US retail spot). The international
+> Exchange v1 API audited in this document **does not apply to their
+> account.** Without a separate CDNA signup and KYC, perpetual
+> futures execution on Crypto.com is not available.
+
+This is not yet confirmed — the user has been asked to verify (see
+§12). But it is the base-rate assumption.
+
+### Consequences if confirmed
+
+- The 4H/12H native candle convenience and the perp execution path
+  documented in §1–§9 **are not usable** with a US-App account.
+- Strategy work that depends on perps (shorts, leverage, funding-rate
+  signals) cannot execute on the user's existing balance.
+- Strategy work that is **spot-only** (long basket of alts during BTC
+  risk-on, otherwise flat or rotated to USDC) can execute on the App,
+  subject to confirming what API surface the App actually exposes
+  (this is a follow-up audit, not done yet).
+- For the perp track to be viable later, the user would need to:
+  1. Open a separate CDNA account (and pass its KYC, and confirm Ohio
+     state eligibility for that product), **or**
+  2. Use a different US-eligible perp venue (Coinbase Advanced INTX
+     perps, Kraken Pro US futures, Bitnomial, etc.).
+
+### Updated decision rule
+
+The original §8 rule still holds. With the US/Ohio fact added, the
+likely branch is the `ELSE` clause:
+
+> Crypto.com (App) = spot data and possibly spot execution.
+> International Exchange API = read-only public data only (anyone can
+> hit it without an account).
+> Perp execution = re-evaluate as a separate audit.
+
+We are still in **conditional pending** until the user completes §12.
+
+---
+
+## 12. Self-verification procedure for the user
+
+I cannot check your account from here. Please run these read-only
+checks yourself. **Do not create any API keys yet.** All steps below
+are read-only and risk-free.
+
+### Step 1 — Identify which Crypto.com product holds your funds
+
+Open whichever Crypto.com app or website you normally use to see your
+balance, and answer these:
+
+1. **Where do you log in?**
+   - Mobile app called "Crypto.com" with a blue diamond logo, or
+     `crypto.com/us` website → almost certainly **App (US retail)**.
+   - `exchange.crypto.com` website → **Exchange (international)**.
+     Should not be possible from a US account; if it works, document it.
+   - Any URL containing `cdna`, `cryptocom-derivatives`, `nadex`,
+     or a separate "Derivatives" account → **CDNA**.
+
+2. **Inside the account, what wallet types do you see?**
+   - Just "Crypto Wallet" / "Fiat Wallet" → App.
+   - "Spot Wallet" + "Margin Wallet" + "Derivatives Wallet" → Exchange.
+   - "Futures" or "Perpetuals" with "Initial Margin" / "Maintenance
+     Margin" terminology → likely CDNA.
+
+3. **Can you see a perpetual futures product?** If you cannot find any
+   perp trading screen at all in your account, you do not currently
+   have perp access regardless of product.
+
+Report back the answers to those three. That alone resolves Blocker A.
+
+### Step 2 — Do NOT do these yet
+
+- Do not generate any API key.
+- Do not enable trading or withdrawal permissions on any key.
+- Do not transfer funds between Crypto.com products.
+- Do not sign up for CDNA "just to see" — each new account is a fresh
+  KYC and a tax/reporting consideration.
+
+### Step 3 — What I'll do once you answer
+
+Based on your answer:
+
+- **App only:** I update §10 to "no Crypto.com perp execution
+  available." Strategy work continues on the spot-only Strategy 1
+  (already venue-agnostic). I open a follow-up audit for the App's
+  actual API surface (separate doc).
+- **Exchange (somehow):** I update §10 to a green decision contingent
+  on Blockers B and C, and we proceed with the read-only authenticated
+  probe.
+- **CDNA:** I open a new audit document for CDNA specifically, since
+  it is a different API and different docs from the international
+  Exchange.
+
+
+---
+
 ## Appendix A — Sources
 
 - Crypto.com Exchange v1 API: <https://exchange-docs.crypto.com/exchange/v1/rest-ws/index.html>
