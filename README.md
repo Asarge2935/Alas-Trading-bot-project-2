@@ -1,12 +1,36 @@
 # Alas Trading Bot — Project 2
 
+> ## ⚠ 2026-05-11 reset notice
+>
+> The 6H trend-pullback strategy described below was archived as
+> "no edge" and the project has been restarted under a stricter
+> edge-discovery framework. The files in this repo's root
+> (`backtest.py`, `rules.json`, `PRE_PAPER_TRADE_CHECKLIST.md`,
+> `SAMPLE_RUN.md`, `REVIEW_NOTES.md`, `docs/STRATEGY_ADA_XRP_LEGACY.md`,
+> `docs/HANDOFF.md`) describe the **previous, archived strategy** and
+> are kept for historical reference only. **Do not run them.**
+>
+> Active work lives in:
+> - `docs/VENUE_AUDIT_CRYPTO_COM.md` — international Exchange API audit + decision (US retail = no perps).
+> - `docs/VENUE_AUDIT_CRYPTO_COM_APP.md` — Crypto.com App audit (no programmatic execution API).
+> - `docs/STRATEGY_1_REGIME_RS_SPEC.md` — current candidate strategy (Regime + Relative Strength rotation, spot-only, daily bars).
+> - `strategy1/` — implementation package (data layer only at this time).
+>
+> Venue conclusion to date: spot-only on a US-eligible venue. Crypto.com
+> App is the user's account but offers no trading API; manual execution
+> is the v0 plan if Strategy 1 passes its gates. No live trading until
+> §10 of `STRATEGY_1_REGIME_RS_SPEC.md` is satisfied.
+
+---
+
+## (Archived) original description
+
 A personal crypto trading bot for a $500 sandbox account on Coinbase
 Advanced (US, CFTC-regulated perpetual futures). Low-frequency 6H swing
 scanner across BTC, ETH, SOL, XRP, ADA, DOT.
 
-> Status: **backtest under review, no paper trade started.** Do not run
-> with live capital. See `PRE_PAPER_TRADE_CHECKLIST.md` for go/no-go
-> criteria before paper trading.
+> Status: **archived 2026-05-11. No edge in 6H pullback. See reset
+> notice above.**
 
 ## What's in here
 

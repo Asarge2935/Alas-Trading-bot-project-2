@@ -1,6 +1,9 @@
 # Backtest output (generated locally, do not commit)
 backtest_output/
 
+# Strategy 1 data cache (generated locally, large, not committed)
+data_cache/
+
 # Python
 __pycache__/
 *.py[cod]
