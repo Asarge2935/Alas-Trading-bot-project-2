@@ -35,13 +35,30 @@ MAX_CANDLES_PER_REQUEST = 300
 # existed long enough to provide a backtest sample. This is the *pool*
 # from which the point-in-time top-N is drawn at each rebalance — see
 # strategy1/universe.py. Listing-date filtering happens there, not here.
+#
+# Known rebrands and delistings (kept here, not silently dropped, so the
+# point-in-time universe still uses each ticker for the period it was
+# active):
+#   MATIC-USD: Coinbase data ends ~2025-10. Migrated to POL-USD.
+#   RNDR-USD:  Not listed (404). Migrated to RENDER-USD.
+#   MKR-USD:   Coinbase data ends ~2026-01. Status to confirm.
+# The successor tickers are included alongside the originals.
+#
+# Coinbase Exchange's public candles endpoint serves at most ~4 years of
+# history per product. That is the upper bound on the backtest window
+# from this data source. See strategy1/README.md for the implication.
 CANDIDATE_PRODUCTS = [
     "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "ADA-USD",
-    "AVAX-USD", "DOT-USD", "LINK-USD", "MATIC-USD", "LTC-USD",
-    "BCH-USD", "ATOM-USD", "UNI-USD", "AAVE-USD", "MKR-USD",
-    "COMP-USD", "ALGO-USD", "FIL-USD", "NEAR-USD", "APT-USD",
-    "ARB-USD", "OP-USD", "INJ-USD", "SUI-USD", "TIA-USD",
-    "SEI-USD", "RNDR-USD", "FET-USD", "GRT-USD", "IMX-USD",
+    "AVAX-USD", "DOT-USD", "LINK-USD", "LTC-USD", "BCH-USD",
+    "ATOM-USD", "UNI-USD", "AAVE-USD", "COMP-USD", "ALGO-USD",
+    "FIL-USD", "NEAR-USD", "APT-USD", "ARB-USD", "OP-USD",
+    "INJ-USD", "SUI-USD", "TIA-USD", "SEI-USD", "FET-USD",
+    "GRT-USD", "IMX-USD",
+    # Predecessors kept for historical periods; will fail freshness
+    # check today, which is the correct behavior:
+    "MATIC-USD", "MKR-USD",
+    # Successors of rebranded tickers:
+    "POL-USD", "RENDER-USD",
 ]
 
 

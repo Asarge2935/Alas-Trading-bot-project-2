@@ -49,12 +49,35 @@ python -m strategy1.quality --in data_cache/
 ```
 
 Produces a per-product table with bar count, gap ratio, longest
-stale-close run, and outlier count. Exits nonzero if any product
-fails a hard gate (gap ratio > 2% or stale-close run ≥ 3 days).
+stale-close run, freshness (days since last bar), and outlier count.
+
+Hard gates (any one fails the product):
+- Gap ratio > 2% inside the covered window.
+- Longest stale-close run ≥ 5 days.
+- Last bar > 7 days old (catches delistings and ticker rebrands like
+  MATIC → POL or RNDR → RENDER, which otherwise look fine inside
+  their covered window).
 
 **Do not proceed to the backtester until every product needed for
-the universe passes.** The whole point of the reset is to avoid
-building strategies on dirty data.
+the universe passes.** Failing tickers should be either replaced
+with their rebrand successor in `data.py` or removed from the
+universe.
+
+### Known data-source limitations
+
+- **~4-year history ceiling.** Coinbase's public candles endpoint
+  serves at most about 1500 daily bars per product. That is the
+  upper bound on the in-sample window from this source alone. The
+  current dataset covers 2022 bear → 2023–24 recovery → 2025–26
+  mixed. **It does not include the 2020–21 bull or the 2018 bear.**
+  Strategy 1's spec §10 gate 7 (works in multiple regimes) cannot
+  be fully tested against this data alone. Mitigations (later, not
+  now): supplement with CoinGecko or CryptoCompare for older bars.
+- **Ticker churn.** Coinbase periodically delists or rebrands
+  products. The candidate list keeps both the predecessor and the
+  successor where known (MATIC + POL, RNDR + RENDER). The
+  point-in-time universe will use each for the period it was
+  active.
 
 ### 3. Point-in-time universe (library use, not yet a CLI)
 
