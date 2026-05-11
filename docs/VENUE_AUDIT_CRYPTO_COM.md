@@ -206,9 +206,109 @@ live keys with trade permission until §10 records a green decision.
 
 ---
 
-## 10. Decision — pending
+## 10. Decision — recorded 2026-05-11
 
-To be filled in once Blockers A/B/C resolve.
+**User confirmed:** logs in via the Crypto.com mobile App (blue
+diamond logo). Inside the account, the available non-spot products
+are **"Up/Down options"** and **event contracts** (prediction
+markets). **No perpetual futures are visible.**
+
+This places the account squarely on **Crypto.com App (US retail)**.
+The international Exchange v1 API audited in §1–§9 of this document
+is **not accessible to this account.** There is no perp product on
+the App for this user.
+
+### What this account can and cannot do
+
+| Capability | Status on this account |
+|---|---|
+| Spot trading on USD pairs | ✅ Available via the App. |
+| Perpetual futures | ❌ Not available. |
+| Margin / leverage | ❌ Not available on this product. |
+| Shorting | ❌ Not available except via the indirect / unsuitable products below. |
+| Up/Down options | ⚠️ Available, but **not suitable** for the strategies in the roadmap (see warning below). |
+| Event contracts (prediction markets) | ⚠️ Available, but **not suitable** for systematic edge-discovery (see warning below). |
+| Funding rates | ❌ N/A — no perps on this account. |
+| Isolated margin | ❌ N/A. |
+| Public REST/WS data feed | ✅ Available to anyone, account-independent. We can still use the Exchange v1 public feed for free market data. |
+
+### Honest warning on Up/Down options and event contracts
+
+It is tempting to use these as a substitute for perps. **Do not.**
+
+- **Up/Down options** on Crypto.com are very-short-duration
+  directional payoffs (typically minutes to a few hours). They are
+  priced with a substantial house spread/skew that creates a
+  built-in negative expected value before any view is expressed.
+  They reward correctness of *direction* but not magnitude, which
+  is the opposite of the strategies in this project (which earn
+  most of their P&L from the size of moves, not just direction).
+  Systematic use of binary-style payoffs against a house spread is
+  almost always EV-negative for the trader.
+- **Event contracts** are CFTC-regulated prediction markets with
+  fixed-payoff structures. They are designed for views on discrete
+  outcomes, not for continuous-exposure trading strategies. They
+  are also typically thinly-resolved (one tick on resolution),
+  which makes them unsuitable for any strategy that depends on
+  intra-position management.
+- Neither product is a viable execution venue for the strategies in
+  the research roadmap. If the project ever wants directional
+  short exposure, it must come from a real perp/futures venue or be
+  abandoned.
+
+### Updated decision
+
+```
+Crypto.com (App) = SPOT-ONLY data and execution candidate.
+                   Subject to a follow-up audit of the App's actual
+                   programmatic API surface (separate doc, not done).
+
+Crypto.com Exchange v1 public REST/WS = read-only market data.
+                   Anyone can hit it. Useful as a second data source
+                   for cross-venue confirmation against Coinbase et al.
+                   Cannot be used for execution from this account.
+
+Perp / short / leverage track = DEFERRED.
+                   Requires a separate venue. Candidates to evaluate
+                   later: Coinbase Advanced INTX perps (US, CFTC),
+                   Kraken Pro US futures, CME micro-bitcoin/ether,
+                   Bitnomial, CDNA (if/when GA in Ohio).
+                   No perp work proceeds until a venue is chosen
+                   AND audited the same way Crypto.com was.
+```
+
+### Implications for the strategy roadmap
+
+- **Strategy 1 (Regime + Relative Strength rotation):** unchanged.
+  It is spot-only and long-only by design. Proceeds as specified
+  in `STRATEGY_1_REGIME_RS_SPEC.md`. The Crypto.com App may
+  ultimately serve as its execution venue, pending the App-API
+  audit.
+- **Strategies 2–4 from the roadmap (Volatility expansion,
+  Liquidation flush, Failed breakout):** all originally specified
+  as needing perps for short side and/or leverage. They are now
+  on hold pending venue resolution. They can be **researched and
+  backtested** without execution access — but no live execution
+  plan exists for them yet. We will not invest in their
+  implementation until a perp venue is audited and committed.
+- **Cross-venue confirmation:** unchanged. We use Coinbase and the
+  Crypto.com Exchange public API as read-only confirmation feeds.
+
+### Next concrete steps
+
+1. **Audit the Crypto.com App API surface** (new document). Verify
+   what programmatic access actually exists for a US App account:
+   what endpoints, what auth, what permission scopes, whether
+   withdrawals can be disabled on a key, whether IP allowlist is
+   supported, what rate limits, whether there is a sandbox at all.
+   This is the equivalent of §1–§9 of this document, but for the
+   App. Until this is done, treat App as "data source viable,
+   execution viability unknown."
+2. **Proceed with Strategy 1 spec → data layer → backtester** in
+   parallel. No venue access required for any of this.
+3. **Defer the perp venue decision** until Strategy 1 produces a
+   verdict. There is no point picking a perp venue for strategies
+   that don't yet exist.
 
 ---
 
