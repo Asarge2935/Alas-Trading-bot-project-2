@@ -8,10 +8,10 @@ candidate strategy after the 2026-05 reset. **Spec:**
 
 | Phase | Status |
 |---|---|
-| Data layer (this commit) | ✅ implemented |
-| Regime classifier | ⏳ next |
-| Relative-strength ranker | ⏳ |
-| Backtester | ⏳ |
+| Data layer | ✅ implemented |
+| Regime classifier | ✅ implemented |
+| Relative-strength ranker | ✅ implemented |
+| Backtester | ⏳ next |
 | Report generator (10 gates) | ⏳ |
 
 No execution wiring exists. None will exist until the data quality
@@ -79,25 +79,56 @@ universe.
   point-in-time universe will use each for the period it was
   active.
 
-### 3. Point-in-time universe (library use, not yet a CLI)
+### 3. Eligible universe and RS ranking (point-in-time)
 
 ```python
 from pathlib import Path
-from strategy1.universe import load_all, top_n_at
+from strategy1.universe import load_all, top_n_at, rank_by_return
 
 all_data = load_all(Path("data_cache"))
-top5 = top_n_at("2024-01-01", all_data, n=5, lookback_days=90)
-# → [('BTC-USD', dollar_volume), ('ETH-USD', ...), ...]
+
+# Eligibility: top-15 by trailing 90D dollar volume on the as-of date.
+eligible = [pid for pid, _ in top_n_at("2024-01-01", all_data,
+                                       n=15, lookback_days=90)]
+
+# Selection: top-5 by trailing 30D return *within* the eligible pool.
+basket = [pid for pid, _ in rank_by_return("2024-01-01", all_data,
+                                           eligible, n=5, lookback_days=30)]
 ```
 
-This is the function the (yet-to-be-built) backtester calls at
-each rebalance date. It enforces:
-- Minimum 120 days of history on the as-of date (no listing pumps).
-- Minimum 90-day rolling dollar-volume sample.
-- A bar must exist on the as-of date itself (no stale prices).
+Why split eligibility from selection:
+- Volume-based eligibility says "this is liquid enough to trade."
+- Return-based selection says "among the liquid set, this is strong."
+- Doing the return ranking on the full universe instead would happily
+  pick a freshly-listed pumper with no real liquidity. Don't.
 
-Anything that would have biased the backtest toward today's
-survivors is excluded by construction.
+Both rankings enforce point-in-time honesty:
+- Minimum 120 days of history on the as-of date (no listing pumps).
+- A bar must exist on the as-of date itself (no stale prices).
+- All windows look strictly backward from the as-of date.
+
+### 4. BTC regime classification
+
+```bash
+python -m strategy1.regime --in data_cache/
+```
+
+Prints overall and yearly risk-on/off counts for both Definition A
+(trend only) and Definition B (trend + non-stress vol). The spec
+calls for testing both definitions independently — picking the
+winner in-sample, re-testing on out-of-sample — so this module
+exposes both. The picking happens in the backtest report, not here.
+
+Library use:
+
+```python
+from strategy1.regime import regime_a, regime_b
+a = regime_a(all_data["BTC-USD"]["close"])  # Series of risk_on/risk_off
+b = regime_b(all_data["BTC-USD"]["close"])
+```
+
+By construction, every `risk_on` bar in B is also `risk_on` in A
+(B applies an additional vol filter; it never relaxes A).
 
 ## What this package will not do
 
