@@ -1,151 +1,146 @@
 {
   "_meta": {
     "project": "Alas Trading Bot",
-    "version": "v2",
+    "version": "v3",
     "source_of_truth_for": "live bot config",
     "code_constants_locked_to": "backtest.py — keep these two files in sync",
-    "live_universe_naming": "BTC-PERP-INTX, ETH-PERP-INTX, SOL-PERP-INTX, XRP-PERP-INTX, ADA-PERP-INTX, DOT-PERP-INTX",
-    "backtest_proxy_naming": "BTC-USD, ETH-USD, ... — Coinbase Exchange public candles serve spot only"
+    "spec": "docs/STRATEGY_SPEC.md is the canonical strategy specification",
+    "live_universe_naming": "BTC-PERP-INTX, ETH-PERP-INTX, SOL-PERP-INTX",
+    "backtest_proxy_naming": "BTC-USD, ETH-USD, SOL-USD — Coinbase Exchange public candles serve spot only; spot/perp basis is small at 6H and partly absorbed by slippage"
   },
   "live_symbols": [
     "BTC-PERP-INTX",
     "ETH-PERP-INTX",
-    "SOL-PERP-INTX",
-    "XRP-PERP-INTX",
-    "ADA-PERP-INTX",
-    "DOT-PERP-INTX"
+    "SOL-PERP-INTX"
   ],
   "backtest_symbols": [
     "BTC-USD",
     "ETH-USD",
-    "SOL-USD",
-    "XRP-USD",
-    "ADA-USD",
-    "DOT-USD"
+    "SOL-USD"
   ],
   "watchlist": [
     "BTC-PERP-INTX",
     "ETH-PERP-INTX",
-    "SOL-PERP-INTX",
-    "XRP-PERP-INTX",
-    "ADA-PERP-INTX",
-    "DOT-PERP-INTX"
+    "SOL-PERP-INTX"
   ],
   "default_timeframe": "SIX_HOUR",
+  "regime_timeframe": "ONE_DAY",
   "mode": "scanner",
   "strategy": {
-    "name": "6H Trend-Pullback Scanner with Volume + BTC Regime Filter",
-    "version": "v2",
-    "description": "Multi-asset scanner. Every closed 6H bar, evaluate all 6 assets. Take the strongest qualifying trend-pullback signal subject to portfolio limits. Long-only above EMA(50) with EMA(20) above EMA(50) and oversold RSI; mirror for shorts."
+    "name": "BTC-Led Regime + Relative Strength + Breakout",
+    "version": "v3",
+    "description": "Scan everything, trade selectively. Each closed 6H bar: classify the BTC daily regime (risk_on / risk_off / neutral); in a directional regime pick the single strongest (long) or weakest (short) of BTC/ETH/SOL by 20-day return; enter only on a 20-bar breakout with a strong close, above-average volume, and BTC confirmation. Neutral regime = no trades. The bot is not paid to trade; it is paid to wait."
   },
   "safety_flags": {
     "paper_trading_enabled": true,
     "live_trading_enabled": false,
     "kill_switch_required": true
   },
+  "regime": {
+    "basis": "BTC daily close (resampled from 6H)",
+    "risk_on": "BTC > EMA(50) AND EMA(50) rising over 10 days AND BTC not >2% below EMA(20) AND not within ±2% of EMA(50) AND EMA(50) not flat",
+    "risk_off": "BTC < EMA(50) AND EMA(50) falling over 10 days AND not within ±2% of EMA(50)",
+    "neutral": "everything else — NO new entries",
+    "neutral_band_pct": 0.02,
+    "ema20_below_limit_pct": 0.02,
+    "slope_lookback_days": 10,
+    "flat_slope_eps": 0.005
+  },
+  "relative_strength": {
+    "lookback_days": 20,
+    "rule": "risk_on -> long the strongest 20-day return; risk_off -> short the weakest. One candidate per bar.",
+    "note": "BTC/ETH/SOL are highly correlated; only one directional candidate is considered at a time in Phase 1."
+  },
   "indicators": {
-    "ema_50_6h": "Slow trend filter — defines regime (long-only above, short-only below)",
-    "ema_20_6h": "Fast momentum confirmation — must align with EMA(50) direction",
-    "rsi_14_6h": "Entry trigger — wide thresholds (30/70) for slower timeframe",
-    "atr_14_6h": "Volatility gate and stop sizing",
-    "volume_avg_20": "Volume confirmation — entry candle must show >1.2x avg volume",
-    "btc_rsi_14_6h": "Inter-market regime filter — blocks counter-BTC trades at extremes"
+    "ema_50_6h": "Trend filter for entries and BTC confirmation",
+    "ema_50_1d": "Regime trend (rising/falling, ±2% neutral band)",
+    "ema_20_1d": "Regime guard (risk_on blocked if >2% below it)",
+    "atr_14_6h": "Stop sizing, trailing distance, volatility-stress gate",
+    "volume_avg_20": "Volume confirmation — entry bar volume must exceed the 20-bar average",
+    "prior_high_low_20": "20-bar breakout level (shifted to exclude the current bar)"
   },
   "entry_rules": {
     "long": [
+      "regime == risk_on",
+      "symbol == strongest 20-day return of BTC/ETH/SOL",
       "close > ema_50_6h",
-      "ema_20_6h > ema_50_6h",
-      "rsi_14_6h < 30",
-      "atr_14_6h < 2.0 * atr_30day_avg",
-      "volume >= 1.2 * volume_avg_20",
-      "btc_rsi_14_6h >= 35 (skip longs when BTC is dumping)",
+      "close > prior_20bar_high",
+      "(close - low) / (high - low) >= 0.75   (strong close, top 25% of range)",
+      "volume >= 1.0 * volume_avg_20",
+      "BTC close > BTC ema_50_6h   (BTC confirmation)",
+      "atr_14_6h < 2.0 * atr_30day_avg   (not in a volatility-stress bar)",
       "no_open_position_on_this_symbol",
-      "open_positions_total < 2",
-      "trades_today_for_symbol < 2",
-      "trades_this_week_total < 5",
-      "drawdown_pct < 15 and not in_pause_window",
-      "current_date not in blackout_dates.global and not in blackout_dates[symbol]"
+      "open_positions_total < 1",
+      "trades_today_for_symbol < 1",
+      "daily_loss < 2% and weekly_loss < 5% and drawdown_pct < 15 and not in_pause_window"
     ],
     "short": [
+      "regime == risk_off",
+      "symbol == weakest 20-day return of BTC/ETH/SOL",
       "close < ema_50_6h",
-      "ema_20_6h < ema_50_6h",
-      "rsi_14_6h > 70",
-      "atr_14_6h < 2.0 * atr_30day_avg",
-      "volume >= 1.2 * volume_avg_20",
-      "btc_rsi_14_6h <= 65 (skip shorts when BTC is ripping)",
+      "close < prior_20bar_low",
+      "(high - close) / (high - low) >= 0.75   (strong close, bottom 25% of range)",
+      "volume >= 1.0 * volume_avg_20",
+      "BTC close < BTC ema_50_6h   (BTC confirmation)",
+      "atr_14_6h < 2.0 * atr_30day_avg   (not in a volatility-stress bar)",
       "no_open_position_on_this_symbol",
-      "open_positions_total < 2",
-      "trades_today_for_symbol < 2",
-      "trades_this_week_total < 5",
-      "drawdown_pct < 15 and not in_pause_window",
-      "current_date not in blackout_dates.global and not in blackout_dates[symbol]"
+      "open_positions_total < 1",
+      "trades_today_for_symbol < 1",
+      "daily_loss < 2% and weekly_loss < 5% and drawdown_pct < 15 and not in_pause_window"
     ]
   },
-  "signal_ranking": "When multiple assets fire simultaneously, take the one with most extreme RSI (furthest from 50). If we already hold a same-direction position, the new signal must be stronger by 5+ RSI points to qualify.",
+  "signal_ranking": "Phase 1 takes one candidate per bar (regime gates direction; RS picks the single strongest/weakest). Phase 2+ may rank multiple A+ setups by regime alignment, relative strength, breakout quality, volume, distance to invalidation, spread/fee, and reward-to-risk — see STRATEGY_SPEC.md §4a.",
   "execution": {
     "entry_timing": "Signal forms on closed 6H bar N. Order fills at bar N+1 open.",
+    "lookahead_guard": "Regime and relative strength for a 6H bar use the PREVIOUS completed daily bar.",
     "incomplete_candle_policy": "Drop latest candle unless its full 6H period has closed.",
     "exit_logic": [
-      "1. Stop loss: 2 ATR from entry (immediate market close on hit)",
-      "2. Target 1: 3 ATR from entry — close 50% of position, move stop to breakeven",
-      "3. Target 2: 6 ATR from entry — close remainder",
-      "4. Time stop: 56 bars (14 days) from entry — market close at bar close",
-      "5. Regime flip: close immediately if 6H close crosses to wrong side of EMA(50)"
+      "1. Stop loss: structure (breakout candle low/high) OR 1.5 ATR from entry, whichever is WIDER. Immediate close on hit.",
+      "2. Partial at +1.5R: close 50% of the position and move the stop to breakeven.",
+      "3. Trail the runner at 2.5 ATR (ratchets in the trade's favor, never below breakeven).",
+      "4. Time stop: exit a dead trade after 12 bars (~3 days at 6H) if it never reached the +1.5R partial."
     ],
-    "exit_priority_note": "Priority order is the order listed above. When stop and target prices both fall inside a single bar's range, the stop is assumed to fire first (conservative). After a partial fill at target 1, the runner is re-evaluated on the NEXT bar with stop at breakeven — the runner is not also closed on the same bar even if target 2 was reached."
+    "exit_priority_note": "Priority is the order listed. The stop is checked with the stop carried in from prior bars (conservative — a new high does not tighten the trailing stop until the next bar). When stop and target both fall in one bar's range, the stop is assumed to fire first."
   },
   "position_sizing": {
-    "method": "Fixed dollar risk with ATR stops",
-    "risk_per_trade_usd": 5.00,
+    "method": "1% of equity risk with structure/ATR stops",
+    "risk_pct": 0.01,
     "leverage_max": 2,
-    "max_margin_per_trade_usd": 50,
-    "max_notional_per_trade_usd": 100,
-    "formula": "notional_usd = risk_usd / stop_distance_pct, then cap at max_notional, margin = notional / leverage",
+    "formula": "notional_usd = (0.01 * equity) / stop_distance_pct, capped at equity * leverage_max; margin = notional / leverage",
     "skip_conditions": [
-      "stop_distance_pct < 0.5% (stop too tight)",
-      "required_margin < $5 (too small to matter)"
-    ]
+      "stop_distance_pct < 0.5% (stop too tight)"
+    ],
+    "live_contract_note": "Live execution sizes in whole nano-perp contracts (contracts = floor(max_risk_usd / risk_per_contract)). A nano perp is ~$188 margin, so a small account funds 0 contracts — a Phase-1 execution constraint handled by the live adapter, not the backtest. The backtest sizes by continuous 1%-risk notional to measure expectancy."
   },
   "risk_rules": {
-    "max_open_positions_total": 2,
-    "max_trades_per_asset_per_day": 2,
+    "max_open_positions_total": 1,
+    "max_trades_per_asset_per_day": 1,
     "max_trades_portfolio_per_week": 5,
+    "max_daily_loss_pct": 2.0,
+    "max_weekly_loss_pct": 5.0,
     "drawdown_pause_pct": 15,
     "drawdown_pause_days": 7,
     "drawdown_stop_pct": 25,
-    "drawdown_calculation": "Drawdown must use ACCOUNT_SIZE_USD + closed_pnl + unrealized_open_pnl (mark-to-market), measured against the running peak of that mark-to-market equity. Never against closed P&L alone."
+    "drawdown_calculation": "Mark-to-market: ACCOUNT_SIZE_USD + closed_pnl + unrealized_open_pnl, measured against the running peak of that MTM equity. Never against closed P&L alone.",
+    "phase_scaling": "Phase 1 (current): 1 open position, 1% risk, take the single best. Phase 2 (after 30 clean trades/30 days): up to 2 open with max total same-direction risk 2% and split sizing. Phase 3 (after edge proven + funding): scale by formula, caps still apply. See STRATEGY_SPEC.md §7."
   },
   "cost_assumptions": {
-    "taker_fee_pct": 0.0003,
+    "taker_fee_pct": 0.0010,
+    "taker_fee_note": "0.10% Coinbase derivatives taker (Intro 1). Per side. See VENUE_AUDIT_PERP_US.md.",
     "min_fee_usd": 0.15,
     "slippage_normal_pct": 0.0010,
     "slippage_high_vol_pct": 0.0020,
     "high_vol_slippage_trigger": "Use slippage_high_vol_pct when candle range exceeds 2 * atr_14.",
     "funding_drag_monthly_pct": 0.005,
     "funding_drag_note": "Flat placeholder — NOT real historical funding-rate data. Real funding lookups must be wired in before live trading.",
-    "funding_partial_close_policy": "After a partial close at target 1, funding drag on the runner is computed against the remaining (half) notional, not the original full notional."
-  },
-  "blackout_dates": {
-    "global": [],
-    "BTC-PERP-INTX": [],
-    "ETH-PERP-INTX": [],
-    "SOL-PERP-INTX": [],
-    "XRP-PERP-INTX": [],
-    "ADA-PERP-INTX": [],
-    "DOT-PERP-INTX": [],
-    "_format": "ISO-8601 date strings (YYYY-MM-DD) UTC. Blackout dates prevent NEW entries on flagged dates; existing positions continue to manage exits normally.",
-    "_examples": {
-      "ada": ["Midnight sidechain launches", "Hard fork dates", "Major governance votes"],
-      "xrp": ["SEC announcements", "Court ruling dates", "ETF approval news"],
-      "macro": ["FOMC meeting day", "CPI release morning", "Major NFP release"]
-    }
+    "funding_partial_close_policy": "After a partial close at the +1.5R target, funding drag on the runner is computed against the remaining (half) notional."
   },
   "deployment_gates": {
-    "backtest": "12+ months of 6H data, net profit factor >= 1.5, max drawdown < 25%, max consecutive losses < 8.",
-    "paper_trade": "30+ days minimum at the same parameters as backtest, with no parameter changes during paper period.",
-    "live_capital_phase_1": "$50 (not $500). Hold this size for 30 days of profitable behavior before scaling.",
-    "live_capital_phase_2": "Scale only after 30 days of phase-1 live behavior matches paper-trade expectations.",
+    "backtest": "12+ months of 6H data, >= 30 trades, positive expectancy after fees/slippage/funding, net profit factor >= 1.3, beats equal-weight BTC/ETH/SOL HODL on risk-adjusted return, max drawdown < 25%, no single trade > 25% of net P&L, out-of-sample PF >= 0.75x in-sample.",
+    "paper_trade": "30+ days minimum at the same parameters as backtest, with no parameter changes during the paper period.",
+    "live_capital_phase_1": "Only once funded enough for >= 1 nano contract with the 1% risk rule intact. Hold Phase-1 sizing for 30 days of behavior matching paper before scaling.",
+    "live_capital_phase_2": "Scale only after Phase-1 live behavior matches paper-trade expectations.",
     "_note": "Passing the backtest only qualifies the strategy for paper trading. It does not approve live trading."
   },
-  "notes": "Backtest 12+ months before any deployment. Paper trade 30+ days minimum. Live capital starts at $50, not $500. Scale only after 30 days of profitable live behavior."
+  "notes": "Canonical spec: docs/STRATEGY_SPEC.md. Backtest 12+ months and clear all gates before any deployment. Paper trade 30+ days. Live only after the account can fund >= 1 contract at 1% risk. The bot is paid to wait, not to trade."
 }

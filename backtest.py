@@ -1,19 +1,32 @@
 """
-Alas Trading Bot — Multi-asset 6H scanner backtester for Coinbase perps.
+Alas Trading Bot — Canonical strategy backtester (Coinbase BTC/ETH/SOL perps).
 
-Universe: BTC, ETH, SOL, XRP, ADA, DOT
-Timeframe: 6H bars (Coinbase Exchange API granularity 21600)
-Mode: Scanner — every closed 6H bar, evaluate all 6 assets, take the strongest
-      qualifying signal subject to portfolio limits.
+Implements docs/STRATEGY_SPEC.md: BTC-led regime + relative strength + breakout.
 
-This is the source of truth for the BACKTEST. Live execution is a separate
-adapter and is intentionally out of scope here.
+Pipeline, per closed 6H bar:
+  1. REGIME (BTC, 1D, derived by resampling 6H): risk_on / risk_off / neutral.
+     - risk_on : BTC>EMA50, EMA50 rising, BTC not >2% below EMA20, not within
+                 the ±2% neutral band, EMA50 not flat.
+     - risk_off: BTC<EMA50, EMA50 falling, not within the neutral band.
+     - neutral : everything else -> NO TRADES (the bot is paid to wait).
+  2. RELATIVE STRENGTH (1D, 20-day return): risk_on -> strongest is the long
+     candidate; risk_off -> weakest is the short candidate. One candidate.
+  3. BREAKOUT ENTRY (6H) on that one candidate: close>EMA50, breaks the prior
+     20-bar high (long) / low (short), strong close (top/bottom 25% of range),
+     volume above average, and BTC confirms (BTC on the same side of its EMA50).
+  4. EXITS: stop = structure (breakout candle extreme) OR 1.5xATR, whichever is
+     wider; take 50% at +1.5R and move stop to breakeven; trail the runner at
+     2.5xATR; time-stop a dead trade after TIME_STOP_BARS with no progress.
+  5. RISK: 1% of equity per trade. Daily-loss 2% / weekly-loss 5% halts. Phase-1
+     caps: 1 open position at a time, 1 trade per asset per day.
 
-Note on tickers: rules.json lists the live perp universe as BTC-PERP-INTX etc.
-The Coinbase Exchange public candles endpoint serves spot only, so this
-backtester uses BTC-USD, ETH-USD, ... as a price proxy for the perp series.
-The spot/perp basis is small at 6H resolution and is partly absorbed by the
-slippage assumption. Document this explicitly when interpreting results.
+No look-ahead: regime/RS for a 6H bar use the PREVIOUS completed daily bar;
+signals form on a closed 6H bar and fill at the next bar's open.
+
+Sizing note (edge vs. execution): the backtest sizes by 1%-risk notional so it
+can MEASURE expectancy. The live integer-contract constraint (a nano perp is
+~$188 margin, so a small account can fund 0 contracts) is a Phase-1 EXECUTION
+concern handled in the live adapter, not here. See STRATEGY_SPEC.md §7.
 
 Run:
     pip install requests pandas numpy
@@ -37,48 +50,63 @@ from typing import Optional
 
 
 # ---------------------------------------------------------------------------
-# Config — locked to rules.json. Do not tweak without updating both.
+# Config — locked to rules.json (v3). Do not tweak without updating both.
 # ---------------------------------------------------------------------------
 
-ASSETS = ["BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "ADA-USD", "DOT-USD"]
-TIMEFRAME_SECONDS = 21600
+ASSETS = ["BTC-USD", "ETH-USD", "SOL-USD"]
+TIMEFRAME_SECONDS = 21600          # 6H entry timeframe
 DAYS_BACK = 365
 BARS_PER_DAY = 86400 // TIMEFRAME_SECONDS
 
-EMA_SLOW = 50
-EMA_FAST = 20
-RSI_PERIOD = 14
-ATR_PERIOD = 14
+# --- Regime (BTC, daily) ---
+REGIME_EMA_SLOW = 50
+REGIME_EMA_FAST = 20
+REGIME_SLOPE_DAYS = 10             # EMA50 "rising/falling" lookback
+NEUTRAL_BAND_PCT = 0.02            # within ±2% of EMA50 -> neutral
+EMA20_BELOW_LIMIT = 0.02           # risk_on blocked if >2% below EMA20
+FLAT_SLOPE_EPS = 0.005             # |EMA50 change over lookback| < 0.5% -> flat -> neutral
+
+# --- Relative strength (daily) ---
+RS_LOOKBACK_DAYS = 20
+
+# --- Breakout entry (6H) ---
+BREAKOUT_LOOKBACK = 20             # prior N-bar high/low
+STRONG_CLOSE_FRAC = 0.75           # close in top/bottom 25% of the bar range
+VOLUME_MULTIPLIER = 1.0            # volume strictly above the 20-bar average
+EMA_TREND = 50                     # 6H EMA the entry/BTC-confirm uses
 VOL_AVG_PERIOD = 20
-ATR_REGIME_PERIOD = 120          # 30 days at 6H
+ATR_PERIOD = 14
+ATR_REGIME_PERIOD = 120            # 30 days at 6H
+ATR_REGIME_MULTIPLE = 2.0          # skip entries when ATR > 2x its regime avg (stress)
 
-RSI_LONG_MAX = 30
-RSI_SHORT_MIN = 70
-ATR_REGIME_MULTIPLE = 2.0
-VOLUME_MULTIPLIER = 1.2
+# --- Exits ---
+STOP_ATR_MULT = 1.5
+PARTIAL_R = 1.5                    # take 50% at +1.5R
+TRAIL_ATR_MULT = 2.5               # trail the runner at 2.5xATR
+TIME_STOP_BARS = 12               # ~3 days at 6H — dead-trade exit (spec: 8-12)
 
-BTC_REGIME_RSI_LOW = 35
-BTC_REGIME_RSI_HIGH = 65
-
+# --- Risk / portfolio ---
 ACCOUNT_SIZE_USD = 500.0
-RISK_PER_TRADE_USD = 5.0
-MAX_MARGIN_PER_TRADE = 50.0
-MAX_LEVERAGE = 2
-MAX_OPEN_POSITIONS = 2
-TIME_STOP_BARS = 56              # 14 days at 6H
+RISK_PCT = 0.01                    # 1% of equity per trade
+MAX_LEVERAGE = 2                   # notional cap = equity * MAX_LEVERAGE
+MIN_STOP_DISTANCE_PCT = 0.005      # skip if stop tighter than 0.5%
+MAX_OPEN_POSITIONS = 1             # Phase 1: one position at a time
+MAX_TRADES_PER_ASSET_PER_DAY = 1   # Phase 1: max 1 per asset per day
+MAX_TRADES_PORTFOLIO_PER_WEEK = 5  # backstop; the loss-% halts are the real cap
+MAX_DAILY_LOSS_PCT = 2.0           # halt new entries for the day
+MAX_WEEKLY_LOSS_PCT = 5.0          # halt new entries for the week
 
-MAX_TRADES_PER_ASSET_PER_DAY = 2
-MAX_TRADES_PORTFOLIO_PER_WEEK = 5
-
-TAKER_FEE_PCT = 0.0003
-MIN_FEE_USD = 0.15
-SLIPPAGE_NORMAL_PCT = 0.0010
-SLIPPAGE_HIGH_VOL_PCT = 0.0020
-FUNDING_DRAG_MONTHLY_PCT = 0.005
-
+# --- Drawdown circuit breakers (MTM) ---
 DRAWDOWN_PAUSE_PCT = 15.0
 DRAWDOWN_STOP_PCT = 25.0
 DRAWDOWN_PAUSE_DAYS = 7
+
+# --- Costs (Coinbase derivatives, Intro 1) ---
+TAKER_FEE_PCT = 0.0010             # 0.10% taker per side (perp); see VENUE_AUDIT_PERP_US.md
+MIN_FEE_USD = 0.15
+SLIPPAGE_NORMAL_PCT = 0.0010
+SLIPPAGE_HIGH_VOL_PCT = 0.0020
+FUNDING_DRAG_MONTHLY_PCT = 0.005   # PLACEHOLDER — wire real funding before live
 
 OUTPUT_DIR = "./backtest_output"
 TRADES_CSV = os.path.join(OUTPUT_DIR, "trades.csv")
@@ -89,26 +117,21 @@ EQUITY_CSV = os.path.join(OUTPUT_DIR, "equity_curve.csv")
 # Data fetching
 # ---------------------------------------------------------------------------
 
-USER_AGENT = "AlasTradingBotBacktester/1.0"
+USER_AGENT = "AlasTradingBotBacktester/3.0"
 
 
 def safe_get(url, params, max_retries=5):
     """HTTP GET with rate-limit backoff and bounded retries."""
     headers = {"User-Agent": USER_AGENT}
     last_response = None
-
     for attempt in range(max_retries):
         r = requests.get(url, params=params, headers=headers, timeout=15)
         last_response = r
-
         if r.status_code == 429:
-            sleep_time = 0.5 * (2 ** attempt)
-            time.sleep(sleep_time)
+            time.sleep(0.5 * (2 ** attempt))
             continue
-
         r.raise_for_status()
         return r
-
     last_response.raise_for_status()
     return last_response
 
@@ -124,7 +147,6 @@ def fetch_candles(product_id, granularity_seconds, days_back):
         chunk_start = cursor - timedelta(seconds=granularity_seconds * 300)
         if chunk_start < start:
             chunk_start = start
-
         params = {
             "start": chunk_start.isoformat(),
             "end": cursor.isoformat(),
@@ -139,44 +161,26 @@ def fetch_candles(product_id, granularity_seconds, days_back):
         cursor = chunk_start
         time.sleep(0.3)
 
-    df = pd.DataFrame(
-        all_candles,
-        columns=["time", "low", "high", "open", "close", "volume"],
-    )
+    df = pd.DataFrame(all_candles, columns=["time", "low", "high", "open", "close", "volume"])
     df = df.drop_duplicates(subset="time").sort_values("time").reset_index(drop=True)
     df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
     return df
 
 
 def drop_incomplete_candles(df, timeframe_seconds):
-    """Drop the latest still-forming candle(s) so the backtester only evaluates closed bars."""
+    """Drop the latest still-forming candle(s) so only closed bars are evaluated."""
     now = pd.Timestamp.now(tz="UTC")
     candle_close_time = df["time"] + pd.Timedelta(seconds=timeframe_seconds)
     return df[candle_close_time <= now].reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
-# Indicators
+# Indicators (6H entry timeframe)
 # ---------------------------------------------------------------------------
 
 def add_indicators(df):
     df = df.copy()
-    df["ema_50"] = df["close"].ewm(span=EMA_SLOW, adjust=False).mean()
-    df["ema_20"] = df["close"].ewm(span=EMA_FAST, adjust=False).mean()
-
-    # RSI with explicit endpoint handling so strong one-sided runs don't produce NaN:
-    #   loss == 0 (pure up-move)   -> RSI = 100
-    #   gain == 0 (pure down-move) -> RSI = 0
-    #   gain == 0 and loss == 0    -> RSI = 50 (flat)
-    delta = df["close"].diff()
-    gain = delta.clip(lower=0).rolling(window=RSI_PERIOD).mean()
-    loss = (-delta.clip(upper=0)).rolling(window=RSI_PERIOD).mean()
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    rsi = rsi.where(loss != 0, 100)
-    rsi = rsi.where(gain != 0, 0)
-    rsi = rsi.where(~((gain == 0) & (loss == 0)), 50)
-    df["rsi_14"] = rsi
+    df["ema_50"] = df["close"].ewm(span=EMA_TREND, adjust=False).mean()
 
     high_low = df["high"] - df["low"]
     high_close = (df["high"] - df["close"].shift()).abs()
@@ -186,7 +190,71 @@ def add_indicators(df):
     df["atr_regime_avg"] = df["atr_14"].rolling(window=ATR_REGIME_PERIOD).mean()
 
     df["volume_avg_20"] = df["volume"].rolling(window=VOL_AVG_PERIOD).mean()
+
+    # Prior N-bar extremes (shifted so the current bar is excluded -> no look-ahead).
+    df["prior_high"] = df["high"].rolling(window=BREAKOUT_LOOKBACK).max().shift(1)
+    df["prior_low"] = df["low"].rolling(window=BREAKOUT_LOOKBACK).min().shift(1)
     return df
+
+
+# ---------------------------------------------------------------------------
+# Regime + relative strength (daily, derived from the 6H series)
+# ---------------------------------------------------------------------------
+
+def _daily_close(df_6h_indexed):
+    """Daily close = last 6H close of each UTC day."""
+    return df_6h_indexed["close"].resample("1D").last().dropna()
+
+
+def compute_regime(btc_daily_close):
+    """Three-state BTC regime per day, shifted so a day uses the PRIOR day's state.
+
+    Returns a Series indexed by daily (midnight-UTC) Timestamp with values in
+    {"risk_on", "risk_off", "neutral"}. Look up by current_time.normalize().
+    """
+    close = btc_daily_close.astype(float)
+    ema_slow = close.ewm(span=REGIME_EMA_SLOW, adjust=False).mean()
+    ema_fast = close.ewm(span=REGIME_EMA_FAST, adjust=False).mean()
+    prev_slow = ema_slow.shift(REGIME_SLOPE_DAYS)
+
+    slope = ema_slow / prev_slow - 1.0
+    rising = slope > FLAT_SLOPE_EPS
+    falling = slope < -FLAT_SLOPE_EPS
+    near_band = (close / ema_slow - 1.0).abs() < NEUTRAL_BAND_PCT
+    not_below_ema20 = close >= ema_fast * (1.0 - EMA20_BELOW_LIMIT)
+
+    risk_on = (close > ema_slow) & rising & ~near_band & not_below_ema20
+    risk_off = (close < ema_slow) & falling & ~near_band
+
+    state = np.where(risk_on, "risk_on", np.where(risk_off, "risk_off", "neutral"))
+    out = pd.Series(state, index=close.index, name="regime")
+    # Bars without enough history (NaN EMAs / slope) are neutral by default.
+    out[ema_slow.isna() | prev_slow.isna()] = "neutral"
+    return out.shift(1).fillna("neutral")
+
+
+def compute_rs(daily_close_by_sym):
+    """Per-day trailing 20-day return for each asset, shifted to use the prior day.
+
+    Returns a DataFrame indexed by daily Timestamp, one column per symbol.
+    """
+    cols = {}
+    for sym, s in daily_close_by_sym.items():
+        cols[sym] = s / s.shift(RS_LOOKBACK_DAYS) - 1.0
+    rs = pd.DataFrame(cols).shift(1)
+    return rs
+
+
+def select_candidate(regime_state, rs_row):
+    """Return (symbol, side) for the one candidate this bar, or (None, None)."""
+    if regime_state == "neutral" or rs_row is None:
+        return None, None
+    valid = rs_row.dropna()
+    if valid.empty:
+        return None, None
+    if regime_state == "risk_on":
+        return valid.idxmax(), "long"
+    return valid.idxmin(), "short"
 
 
 # ---------------------------------------------------------------------------
@@ -197,23 +265,22 @@ def add_indicators(df):
 class Trade:
     symbol: str
     side: str
-    # Coinbase candle "time" is the candle START. signal_candle_time is the
-    # start time of the bar that produced the signal; the signal is only
-    # actionable AFTER the bar closes (i.e., signal_candle_time + TIMEFRAME).
+    # Coinbase candle "time" is the candle START. The signal is actionable only
+    # AFTER the bar closes; entry fills at the next bar's open.
     signal_candle_time: pd.Timestamp
     entry_time: pd.Timestamp
     entry_price: float
     stop_price: float
     target_1_price: float
-    target_2_price: float
     initial_stop_distance: float
     notional_usd: float
     margin_usd: float
     leverage: int
-    rsi_at_signal: float
     atr_at_signal: float
-    btc_rsi_at_signal: float
+    regime_state: str
+    rs_return: float
 
+    trail_anchor: Optional[float] = None
     exit_time: Optional[pd.Timestamp] = None
     exit_time_partial: Optional[pd.Timestamp] = None
     exit_price_partial: Optional[float] = None
@@ -233,8 +300,7 @@ class Trade:
 # ---------------------------------------------------------------------------
 
 def calculate_fees(notional_usd):
-    pct_fee = notional_usd * TAKER_FEE_PCT
-    return max(pct_fee, MIN_FEE_USD)
+    return max(notional_usd * TAKER_FEE_PCT, MIN_FEE_USD)
 
 
 def calculate_slippage(notional_usd, is_high_vol):
@@ -242,138 +308,97 @@ def calculate_slippage(notional_usd, is_high_vol):
     return notional_usd * pct
 
 
-def calculate_funding_drag(notional_usd, bars_held):
-    days_held = bars_held / BARS_PER_DAY
-    monthly_to_daily = FUNDING_DRAG_MONTHLY_PCT / 30
-    return notional_usd * monthly_to_daily * days_held
-
-
 def calculate_trade_funding_drag(trade):
-    """
-    Funding drag that respects the partial close: full notional before target 1,
-    half notional after. Falls back to the simple notional × days_held when the
-    trade exited without a partial fill.
-    """
+    """Funding drag respecting the partial close: full notional pre-target-1, half after."""
     monthly_to_daily = FUNDING_DRAG_MONTHLY_PCT / 30
-
     if trade.exit_time_partial is None:
         days_held = trade.bars_held / BARS_PER_DAY
         return trade.notional_usd * monthly_to_daily * days_held
-
-    bars_before_partial = (
-        trade.exit_time_partial - trade.entry_time
-    ).total_seconds() / TIMEFRAME_SECONDS
-    bars_after_partial = (
-        trade.exit_time - trade.exit_time_partial
-    ).total_seconds() / TIMEFRAME_SECONDS
-
-    days_before = bars_before_partial / BARS_PER_DAY
-    days_after = bars_after_partial / BARS_PER_DAY
-
-    funding_before = trade.notional_usd * monthly_to_daily * days_before
-    funding_after = (trade.notional_usd / 2) * monthly_to_daily * days_after
-
+    bars_before = (trade.exit_time_partial - trade.entry_time).total_seconds() / TIMEFRAME_SECONDS
+    bars_after = (trade.exit_time - trade.exit_time_partial).total_seconds() / TIMEFRAME_SECONDS
+    funding_before = trade.notional_usd * monthly_to_daily * (bars_before / BARS_PER_DAY)
+    funding_after = (trade.notional_usd / 2) * monthly_to_daily * (bars_after / BARS_PER_DAY)
     return funding_before + funding_after
 
 
 def is_high_vol_bar(bar):
-    """Flag a bar as high-volatility when its range exceeds 2 × ATR(14)."""
+    """High-volatility bar: range exceeds 2 x ATR(14)."""
     atr = bar.get("atr_14") if hasattr(bar, "get") else None
     if atr is None or pd.isna(atr):
         return False
-    bar_range = bar["high"] - bar["low"]
-    return bar_range > 2 * atr
+    return (bar["high"] - bar["low"]) > 2 * atr
 
 
 def unrealized_pnl(trade, current_price):
-    """
-    Mark-to-market P&L on the OPEN portion of the trade. After a partial close
-    at target 1, only half the original notional is still open.
-    """
-    if trade.side == "long":
-        move = current_price - trade.entry_price
-    else:
-        move = trade.entry_price - current_price
-
-    open_notional = trade.notional_usd
-    if trade.exit_price_partial is not None:
-        open_notional = trade.notional_usd / 2
-
+    """MTM P&L on the OPEN portion. After a partial close, only half is open."""
+    move = (current_price - trade.entry_price) if trade.side == "long" \
+        else (trade.entry_price - current_price)
+    open_notional = trade.notional_usd / 2 if trade.exit_price_partial is not None \
+        else trade.notional_usd
     return (move / trade.entry_price) * open_notional
 
 
 # ---------------------------------------------------------------------------
-# Position sizing
+# Position sizing — 1% risk
 # ---------------------------------------------------------------------------
 
-def size_position(entry_price, stop_price):
-    """notional = risk / stop_pct, capped at max_notional, margin = notional / leverage."""
-    stop_distance = abs(entry_price - stop_price)
-    stop_distance_pct = stop_distance / entry_price
-
-    if stop_distance_pct < 0.005:
+def size_position(entry_price, stop_price, equity):
+    """notional = (RISK_PCT * equity) / stop_pct, capped at equity * MAX_LEVERAGE."""
+    stop_distance_pct = abs(entry_price - stop_price) / entry_price
+    if stop_distance_pct < MIN_STOP_DISTANCE_PCT:
         return None
-
-    notional_usd = RISK_PER_TRADE_USD / stop_distance_pct
-    max_notional = MAX_MARGIN_PER_TRADE * MAX_LEVERAGE
-    notional_usd = min(notional_usd, max_notional)
+    risk_usd = RISK_PCT * equity
+    notional_usd = risk_usd / stop_distance_pct
+    notional_usd = min(notional_usd, equity * MAX_LEVERAGE)
     margin_usd = notional_usd / MAX_LEVERAGE
-
-    if margin_usd < 5:
+    if notional_usd <= 0:
         return None
-
     return notional_usd, margin_usd, MAX_LEVERAGE
 
 
 # ---------------------------------------------------------------------------
-# Signal evaluation
+# Breakout signal
 # ---------------------------------------------------------------------------
 
-def evaluate_signal(row, btc_row):
-    required = ["ema_50", "ema_20", "rsi_14", "atr_14", "atr_regime_avg",
-                "volume_avg_20"]
+def evaluate_breakout(row, side, btc_row):
+    """True if `side` breakout conditions hold on this 6H bar (spec §5)."""
+    required = ["ema_50", "atr_14", "atr_regime_avg", "volume_avg_20",
+                "prior_high", "prior_low"]
     for col in required:
         if pd.isna(row[col]):
-            return None
+            return False
 
+    # Volatility-stress stand-down.
     if row["atr_14"] > ATR_REGIME_MULTIPLE * row["atr_regime_avg"]:
-        return None
+        return False
+    # Volume confirmation.
     if row["volume"] < VOLUME_MULTIPLIER * row["volume_avg_20"]:
-        return None
+        return False
 
-    # Treat missing/NaN BTC RSI as neutral (50) — never block trades because BTC bar is unavailable
-    if btc_row is None or pd.isna(btc_row["rsi_14"]):
-        btc_rsi = 50.0
+    bar_range = row["high"] - row["low"]
+    if bar_range <= 0:
+        return False
+
+    btc_ok = btc_row is not None and not pd.isna(btc_row["ema_50"])
+    if not btc_ok:
+        return False
+
+    if side == "long":
+        strong_close = (row["close"] - row["low"]) / bar_range >= STRONG_CLOSE_FRAC
+        return (
+            row["close"] > row["ema_50"]
+            and row["close"] > row["prior_high"]
+            and strong_close
+            and btc_row["close"] > btc_row["ema_50"]
+        )
     else:
-        btc_rsi = btc_row["rsi_14"]
-    btc_extreme_low = btc_rsi < BTC_REGIME_RSI_LOW
-    btc_extreme_high = btc_rsi > BTC_REGIME_RSI_HIGH
-
-    long_ok = (
-        row["close"] > row["ema_50"]
-        and row["ema_20"] > row["ema_50"]
-        and row["rsi_14"] < RSI_LONG_MAX
-        and not btc_extreme_low
-    )
-    short_ok = (
-        row["close"] < row["ema_50"]
-        and row["ema_20"] < row["ema_50"]
-        and row["rsi_14"] > RSI_SHORT_MIN
-        and not btc_extreme_high
-    )
-
-    if long_ok and short_ok:
-        return None
-    if long_ok:
-        return "long"
-    if short_ok:
-        return "short"
-    return None
-
-
-def signal_strength_from_rsi(rsi):
-    """RSI distance from 50. Used to rank multiple simultaneous signals."""
-    return abs(rsi - 50)
+        strong_close = (row["high"] - row["close"]) / bar_range >= STRONG_CLOSE_FRAC
+        return (
+            row["close"] < row["ema_50"]
+            and row["close"] < row["prior_low"]
+            and strong_close
+            and btc_row["close"] < btc_row["ema_50"]
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -390,31 +415,32 @@ def run_backtest(data_by_symbol):
     indexed = {sym: df.set_index("time") for sym, df in data_by_symbol.items()}
     btc_df = indexed["BTC-USD"]
 
+    # Daily regime + relative strength, derived from the 6H series.
+    daily_close = {sym: _daily_close(indexed[sym]) for sym in indexed}
+    regime_by_day = compute_regime(daily_close["BTC-USD"])
+    regime_map = regime_by_day.to_dict()
+    rs_by_day = compute_rs(daily_close)
+
     open_trades = {}
     closed_trades = []
     equity_curve = []
     cumulative_pnl = 0.0
-    # Drawdown is measured against ACCOUNT_SIZE_USD baseline so early losses
-    # before the first winner are correctly tracked. Fixed in this rebuild.
     peak_account_value = ACCOUNT_SIZE_USD
     drawdown_pct_from_peak = 0.0
 
     trades_today = {sym: 0 for sym in ASSETS}
     last_day = None
+    last_week = None
+    day_start_equity = ACCOUNT_SIZE_USD
+    week_start_equity = ACCOUNT_SIZE_USD
     weekly_trade_times = []
     drawdown_pause_until = None
 
     for current_time in common_times:
         current_day = current_time.date()
+        current_week = current_time.isocalendar()[:2]
 
-        if last_day is None or current_day != last_day:
-            trades_today = {sym: 0 for sym in ASSETS}
-            last_day = current_day
-
-        weekly_trade_times = [t for t in weekly_trade_times
-                              if (current_time - t).days < 7]
-
-        # 1. Manage open positions: check exits first
+        # 1. Manage open positions: exits first.
         for sym in list(open_trades.keys()):
             trade = open_trades[sym]
             bar = indexed[sym].loc[current_time]
@@ -425,15 +451,22 @@ def run_backtest(data_by_symbol):
                 cumulative_pnl += trade.net_pnl_usd
                 del open_trades[sym]
 
-        # 2. Mark-to-market equity: ACCOUNT + closed P&L + unrealized open P&L.
-        #    Drawdown and circuit breakers operate against this MTM number so
-        #    open losers can't hide behind closed winners.
+        # 2. Mark-to-market equity (account + closed + unrealized open).
         open_pnl = 0.0
         for sym, trade in open_trades.items():
             bar = indexed[sym].loc[current_time]
             open_pnl += unrealized_pnl(trade, bar["close"])
-
         mark_to_market_equity = ACCOUNT_SIZE_USD + cumulative_pnl + open_pnl
+
+        # Day / week rollover: snapshot equity for the loss-limit halts.
+        if last_day is None or current_day != last_day:
+            trades_today = {sym: 0 for sym in ASSETS}
+            day_start_equity = mark_to_market_equity
+            last_day = current_day
+        if last_week is None or current_week != last_week:
+            week_start_equity = mark_to_market_equity
+            last_week = current_week
+        weekly_trade_times = [t for t in weekly_trade_times if (current_time - t).days < 7]
 
         if mark_to_market_equity > peak_account_value:
             peak_account_value = mark_to_market_equity
@@ -444,79 +477,52 @@ def run_backtest(data_by_symbol):
 
         if drawdown_pct_from_peak >= DRAWDOWN_STOP_PCT:
             print(f"DRAWDOWN STOP HIT at {current_time}: {drawdown_pct_from_peak:.1f}%")
-            equity_curve.append({
-                "time": current_time,
-                "equity": mark_to_market_equity,
-                "cumulative_pnl": cumulative_pnl,
-                "open_positions": len(open_trades),
-                "drawdown_pct": drawdown_pct_from_peak,
-            })
+            equity_curve.append(_equity_point(current_time, mark_to_market_equity,
+                                               cumulative_pnl, open_trades, drawdown_pct_from_peak))
             return closed_trades, equity_curve
         if drawdown_pct_from_peak >= DRAWDOWN_PAUSE_PCT and drawdown_pause_until is None:
             drawdown_pause_until = current_time + timedelta(days=DRAWDOWN_PAUSE_DAYS)
             print(f"DRAWDOWN PAUSE at {current_time}: {drawdown_pct_from_peak:.1f}% "
                   f"— paused until {drawdown_pause_until.date()}")
 
-        equity_curve.append({
-            "time": current_time,
-            "equity": mark_to_market_equity,
-            "cumulative_pnl": cumulative_pnl,
-            "open_positions": len(open_trades),
-            "drawdown_pct": drawdown_pct_from_peak,
-        })
+        equity_curve.append(_equity_point(current_time, mark_to_market_equity,
+                                           cumulative_pnl, open_trades, drawdown_pct_from_peak))
 
-        # 3. Check entry eligibility
+        # 3. Entry eligibility gates.
         if drawdown_pause_until and current_time < drawdown_pause_until:
             continue
         elif drawdown_pause_until and current_time >= drawdown_pause_until:
             drawdown_pause_until = None
-
         if len(open_trades) >= MAX_OPEN_POSITIONS:
             continue
         if len(weekly_trade_times) >= MAX_TRADES_PORTFOLIO_PER_WEEK:
             continue
-
-        # 4. Scan all assets for signals on this bar
-        candidates = []
-        for sym in ASSETS:
-            if sym in open_trades:
-                continue
-            if trades_today[sym] >= MAX_TRADES_PER_ASSET_PER_DAY:
-                continue
-
-            bar = indexed[sym].loc[current_time]
-            btc_bar = btc_df.loc[current_time] if current_time in btc_df.index else None
-            side = evaluate_signal(bar, btc_bar)
-            if side:
-                candidates.append((sym, side, signal_strength_from_rsi(bar["rsi_14"]), bar, btc_bar))
-
-        if not candidates:
+        # Daily / weekly loss-% halts.
+        if day_start_equity > 0 and \
+                (mark_to_market_equity - day_start_equity) / day_start_equity * 100 <= -MAX_DAILY_LOSS_PCT:
+            continue
+        if week_start_equity > 0 and \
+                (mark_to_market_equity - week_start_equity) / week_start_equity * 100 <= -MAX_WEEKLY_LOSS_PCT:
             continue
 
-        # Same-direction filter: a new signal in the same direction as an existing
-        # open trade must be 5+ RSI points more extreme to qualify.
-        if open_trades:
-            existing_sides = [t.side for t in open_trades.values()]
-            filtered = []
-            for cand in candidates:
-                sym, side, strength, bar, btc_bar = cand
-                if side in existing_sides:
-                    existing_max = max(
-                        signal_strength_from_rsi(t.rsi_at_signal)
-                        for t in open_trades.values() if t.side == side
-                    )
-                    if strength <= existing_max + 5:
-                        continue
-                filtered.append(cand)
-            candidates = filtered
-
-        if not candidates:
+        # 4. Regime -> RS -> single candidate.
+        regime_state = regime_map.get(current_time.normalize(), "neutral")
+        if regime_state == "neutral":
+            continue
+        rs_row = rs_by_day.loc[current_time.normalize()] \
+            if current_time.normalize() in rs_by_day.index else None
+        sym, side = select_candidate(regime_state, rs_row)
+        if sym is None or sym not in indexed:
+            continue
+        if sym in open_trades or trades_today.get(sym, 0) >= MAX_TRADES_PER_ASSET_PER_DAY:
             continue
 
-        candidates.sort(key=lambda x: x[2], reverse=True)
-        sym, side, strength, bar, btc_bar = candidates[0]
+        bar = indexed[sym].loc[current_time]
+        btc_bar = btc_df.loc[current_time] if current_time in btc_df.index else None
+        if not evaluate_breakout(bar, side, btc_bar):
+            continue
 
-        # 5. Determine entry price (next bar open — no lookahead)
+        # 5. Entry at the next bar's open (no look-ahead).
         sym_df = indexed[sym].reset_index()
         sig_idx = sym_df.index[sym_df["time"] == current_time].tolist()
         if not sig_idx or sig_idx[0] + 1 >= len(sym_df):
@@ -524,42 +530,43 @@ def run_backtest(data_by_symbol):
         next_bar = sym_df.iloc[sig_idx[0] + 1]
         entry_price = next_bar["open"]
         entry_time = next_bar["time"]
-
         atr = bar["atr_14"]
-        if side == "long":
-            stop_price = entry_price - 2 * atr
-            target_1 = entry_price + 3 * atr
-            target_2 = entry_price + 6 * atr
-        else:
-            stop_price = entry_price + 2 * atr
-            target_1 = entry_price - 3 * atr
-            target_2 = entry_price - 6 * atr
 
-        sizing = size_position(entry_price, stop_price)
+        # Stop = structure (breakout candle extreme) OR 1.5xATR, whichever is WIDER.
+        if side == "long":
+            structure_stop = bar["low"]
+            atr_stop = entry_price - STOP_ATR_MULT * atr
+            stop_price = min(structure_stop, atr_stop)
+            r = entry_price - stop_price
+            target_1 = entry_price + PARTIAL_R * r
+        else:
+            structure_stop = bar["high"]
+            atr_stop = entry_price + STOP_ATR_MULT * atr
+            stop_price = max(structure_stop, atr_stop)
+            r = stop_price - entry_price
+            target_1 = entry_price - PARTIAL_R * r
+        if r <= 0:
+            continue
+
+        sizing = size_position(entry_price, stop_price, mark_to_market_equity)
         if not sizing:
             continue
         notional, margin, leverage = sizing
 
-        btc_rsi_at_signal = 50.0
-        if btc_bar is not None and not pd.isna(btc_bar["rsi_14"]):
-            btc_rsi_at_signal = float(btc_bar["rsi_14"])
-
+        rs_ret = float(rs_row[sym]) if rs_row is not None and not pd.isna(rs_row[sym]) else float("nan")
         trade = Trade(
             symbol=sym, side=side,
             signal_candle_time=current_time, entry_time=entry_time,
-            entry_price=entry_price, stop_price=stop_price,
-            target_1_price=target_1, target_2_price=target_2,
+            entry_price=entry_price, stop_price=stop_price, target_1_price=target_1,
             initial_stop_distance=abs(entry_price - stop_price),
             notional_usd=notional, margin_usd=margin, leverage=leverage,
-            rsi_at_signal=float(bar["rsi_14"]), atr_at_signal=float(atr),
-            btc_rsi_at_signal=btc_rsi_at_signal,
+            atr_at_signal=float(atr), regime_state=regime_state, rs_return=rs_ret,
         )
         open_trades[sym] = trade
-        trades_today[sym] += 1
+        trades_today[sym] = trades_today.get(sym, 0) + 1
         weekly_trade_times.append(current_time)
 
-    # Mark-to-market any still-open trades at the last bar — and add their
-    # net P&L to cumulative_pnl so the portfolio total reflects them.
+    # Mark any still-open trades to the final bar.
     for sym, trade in open_trades.items():
         last_bar = indexed[sym].iloc[-1]
         bars_held = (last_bar.name - trade.entry_time).total_seconds() / TIMEFRAME_SECONDS
@@ -574,77 +581,73 @@ def run_backtest(data_by_symbol):
     return closed_trades, equity_curve
 
 
+def _equity_point(t, equity, cum_pnl, open_trades, dd):
+    return {"time": t, "equity": equity, "cumulative_pnl": cum_pnl,
+            "open_positions": len(open_trades), "drawdown_pct": dd}
+
+
 def check_exit(trade, bar, current_time):
     """
-    Exit priority (matches rules.json exit_logic order):
-        1. Stop hit (immediate market close)
-        2. Target 1 hit (close 50%, move stop to breakeven, runner stays open)
-        3. Target 2 hit (close runner)
-        4. Time stop (>= 56 bars from entry)
-        5. Regime flip (close on wrong side of EMA(50))
-
-    Same-bar policy:
-      - When stop and target prices both fall within a single bar's range, the
-        stop is assumed to fire first (conservative).
-      - When target 1 fires, the runner is NOT also evaluated on the same bar;
-        the BE-stopped runner is re-checked on the next bar. This understates
-        the rare case of a single 6H bar covering entry → 6 ATR.
+    Exit priority (spec §6):
+      1. Stop (initial / breakeven / trailing) — checked with the stop carried
+         in from prior bars (conservative: same-bar new highs don't tighten the
+         stop until the next bar).
+      2. Partial at +1.5R — close 50%, move stop to breakeven.
+      3. After a partial, ratchet the trailing stop (2.5xATR) for the NEXT bar.
+      4. Time stop — exit a dead trade after TIME_STOP_BARS with no partial.
     """
     bars_held_so_far = (current_time - trade.entry_time).total_seconds() / TIMEFRAME_SECONDS
     if bars_held_so_far < 0:
-        return None  # bar before entry — defensive
+        return None
     is_high_vol = is_high_vol_bar(bar)
-
     has_partial = trade.exit_price_partial is not None
 
-    # Priority 1-3: stop, partial-at-target-1, runner-at-target-2
     if trade.side == "long":
+        # 1. stop
         if bar["low"] <= trade.stop_price:
             return {"exit_time": current_time, "exit_price": trade.stop_price,
-                    "reason": "stop_hit", "bars_held": int(bars_held_so_far),
+                    "reason": _stop_reason(trade, has_partial), "bars_held": int(bars_held_so_far),
                     "is_high_vol": is_high_vol}
+        # 2. partial
         if not has_partial and bar["high"] >= trade.target_1_price:
             trade.exit_price_partial = trade.target_1_price
             trade.exit_time_partial = current_time
-            trade.stop_price = trade.entry_price
+            trade.stop_price = trade.entry_price          # breakeven
+            trade.trail_anchor = max(bar["high"], trade.entry_price)
             return None
-        if has_partial and bar["high"] >= trade.target_2_price:
-            return {"exit_time": current_time, "exit_price": trade.target_2_price,
-                    "reason": "target_2_runner_hit", "bars_held": int(bars_held_so_far),
-                    "is_high_vol": is_high_vol}
+        # 3. ratchet trailing stop for next bar
+        if has_partial:
+            trade.trail_anchor = max(trade.trail_anchor, bar["high"])
+            trade.stop_price = max(trade.stop_price,
+                                   trade.trail_anchor - TRAIL_ATR_MULT * trade.atr_at_signal)
     else:
         if bar["high"] >= trade.stop_price:
             return {"exit_time": current_time, "exit_price": trade.stop_price,
-                    "reason": "stop_hit", "bars_held": int(bars_held_so_far),
+                    "reason": _stop_reason(trade, has_partial), "bars_held": int(bars_held_so_far),
                     "is_high_vol": is_high_vol}
         if not has_partial and bar["low"] <= trade.target_1_price:
             trade.exit_price_partial = trade.target_1_price
             trade.exit_time_partial = current_time
             trade.stop_price = trade.entry_price
+            trade.trail_anchor = min(bar["low"], trade.entry_price)
             return None
-        if has_partial and bar["low"] <= trade.target_2_price:
-            return {"exit_time": current_time, "exit_price": trade.target_2_price,
-                    "reason": "target_2_runner_hit", "bars_held": int(bars_held_so_far),
-                    "is_high_vol": is_high_vol}
+        if has_partial:
+            trade.trail_anchor = min(trade.trail_anchor, bar["low"])
+            trade.stop_price = min(trade.stop_price,
+                                   trade.trail_anchor + TRAIL_ATR_MULT * trade.atr_at_signal)
 
-    # Priority 4: time stop (BEFORE regime flip per rules.json)
-    if bars_held_so_far >= TIME_STOP_BARS:
+    # 4. time stop — only a dead trade that never reached the partial
+    if not has_partial and bars_held_so_far >= TIME_STOP_BARS:
         return {"exit_time": current_time, "exit_price": bar["close"],
                 "reason": "time_stop", "bars_held": int(bars_held_so_far),
                 "is_high_vol": is_high_vol}
-
-    # Priority 5: regime flip
-    if not pd.isna(bar["ema_50"]):
-        if trade.side == "long" and bar["close"] < bar["ema_50"]:
-            return {"exit_time": current_time, "exit_price": bar["close"],
-                    "reason": "regime_flip", "bars_held": int(bars_held_so_far),
-                    "is_high_vol": is_high_vol}
-        if trade.side == "short" and bar["close"] > bar["ema_50"]:
-            return {"exit_time": current_time, "exit_price": bar["close"],
-                    "reason": "regime_flip", "bars_held": int(bars_held_so_far),
-                    "is_high_vol": is_high_vol}
-
     return None
+
+
+def _stop_reason(trade, has_partial):
+    if not has_partial:
+        return "stop_hit"
+    return "breakeven_stop" if trade.stop_price == trade.entry_price else "trail_stop"
 
 
 def finalize_trade(trade, exit_event):
@@ -660,31 +663,23 @@ def finalize_trade(trade, exit_event):
         else:
             move_partial = trade.entry_price - trade.exit_price_partial
             move_final = trade.entry_price - trade.exit_price_final
-
         gross_partial = (move_partial / trade.entry_price) * (trade.notional_usd / 2)
         gross_final = (move_final / trade.entry_price) * (trade.notional_usd / 2)
         trade.gross_pnl_usd = gross_partial + gross_final
-
-        trade.fees_usd = (
-            calculate_fees(trade.notional_usd)
-            + calculate_fees(trade.notional_usd / 2)
-            + calculate_fees(trade.notional_usd / 2)
-        )
+        trade.fees_usd = (calculate_fees(trade.notional_usd)
+                          + calculate_fees(trade.notional_usd / 2)
+                          + calculate_fees(trade.notional_usd / 2))
     else:
-        if trade.side == "long":
-            move = trade.exit_price_final - trade.entry_price
-        else:
-            move = trade.entry_price - trade.exit_price_final
+        move = (trade.exit_price_final - trade.entry_price) if trade.side == "long" \
+            else (trade.entry_price - trade.exit_price_final)
         trade.gross_pnl_usd = (move / trade.entry_price) * trade.notional_usd
         trade.fees_usd = calculate_fees(trade.notional_usd) * 2
 
     is_high_vol = exit_event.get("is_high_vol", False)
     if trade.exit_price_partial is not None:
-        trade.slippage_usd = (
-            calculate_slippage(trade.notional_usd, is_high_vol)
-            + calculate_slippage(trade.notional_usd / 2, is_high_vol)
-            + calculate_slippage(trade.notional_usd / 2, is_high_vol)
-        )
+        trade.slippage_usd = (calculate_slippage(trade.notional_usd, is_high_vol)
+                              + calculate_slippage(trade.notional_usd / 2, is_high_vol)
+                              + calculate_slippage(trade.notional_usd / 2, is_high_vol))
     else:
         trade.slippage_usd = calculate_slippage(trade.notional_usd, is_high_vol) * 2
 
@@ -722,14 +717,14 @@ def export_equity_csv(curve, path):
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for row in curve:
-            row = {**row, "time": row["time"].isoformat()}
-            writer.writerow(row)
+            writer.writerow({**row, "time": row["time"].isoformat()})
     print(f"Exported equity curve ({len(curve)} points) to {path}")
 
 
 def report_summary(trades, equity_curve):
     if not trades:
-        print("\nNo trades executed in this period.")
+        print("\nNo trades executed in this period. "
+              "(With strict regime+RS+breakout gating, zero trades is a valid result.)")
         return
 
     by_bucket = {}
@@ -738,7 +733,7 @@ def report_summary(trades, equity_curve):
             by_bucket.setdefault(bucket_name, []).append(t)
 
     print("\n" + "=" * 70)
-    print(f"BACKTEST SUMMARY ({DAYS_BACK} days, 6H bars)")
+    print(f"BACKTEST SUMMARY ({DAYS_BACK} days, 6H bars, BTC/ETH/SOL)")
     print("=" * 70)
 
     for bucket, bucket_trades in sorted(by_bucket.items()):
@@ -768,7 +763,6 @@ def report_summary(trades, equity_curve):
         print(f"  Funding drag:       -${total_fund:.2f}")
         print(f"  Net P&L:             ${total_pnl:+.2f}")
 
-    # Reconcile final portfolio P&L from trades directly so it always matches trades.csv.
     final_pnl = sum(t.net_pnl_usd for t in trades)
     final_equity = ACCOUNT_SIZE_USD + final_pnl
     max_dd = max((p["drawdown_pct"] for p in equity_curve), default=0.0)
@@ -780,10 +774,8 @@ def report_summary(trades, equity_curve):
     print(f"  Return on capital:   {final_pnl / ACCOUNT_SIZE_USD * 100:+.2f}%")
     print(f"  Max drawdown:        {max_dd:.2f}%   (mark-to-market)")
 
-    # Loss streak must be in chronological order — sort by exit_time, fall back to entry_time.
     trades_sorted = sorted(trades, key=lambda t: t.exit_time or t.entry_time)
-    streak = 0
-    max_loss_streak = 0
+    streak = max_loss_streak = 0
     for t in trades_sorted:
         if t.net_pnl_usd <= 0:
             streak += 1
@@ -800,7 +792,7 @@ def report_summary(trades, equity_curve):
     print("Net Profit Factor < 1.0 = strategy loses money after costs, do not deploy")
     print("Avg R > +0.2 = each trade has positive expectancy")
     print("Max DD > 25% = risk parameters too aggressive")
-    print("Max consecutive losses > 6 = high tail risk, expect rough patches")
+    print("Need >= 30 trades before the numbers mean anything (spec gate).")
     print()
 
 
@@ -809,11 +801,11 @@ def report_summary(trades, equity_curve):
 # ---------------------------------------------------------------------------
 
 def main():
-    print(f"Backtest config: {DAYS_BACK} days, 6H bars, {len(ASSETS)} assets")
-    print(f"Assets: {', '.join(ASSETS)}")
-    print(f"Indicators: EMA{EMA_FAST}/{EMA_SLOW}, RSI{RSI_PERIOD}, ATR{ATR_PERIOD}, Vol{VOL_AVG_PERIOD}")
-    print(f"Filters: BTC regime ({BTC_REGIME_RSI_LOW}-{BTC_REGIME_RSI_HIGH}), "
-          f"volume >= {VOLUME_MULTIPLIER}x avg")
+    print(f"Backtest config: {DAYS_BACK} days, 6H bars, assets: {', '.join(ASSETS)}")
+    print(f"Regime: BTC 1D EMA{REGIME_EMA_SLOW} (3-state)  |  RS: {RS_LOOKBACK_DAYS}d return")
+    print(f"Entry: {BREAKOUT_LOOKBACK}-bar breakout + strong close + BTC confirm")
+    print(f"Risk: {RISK_PCT*100:.0f}%/trade, daily-loss {MAX_DAILY_LOSS_PCT}%, "
+          f"weekly-loss {MAX_WEEKLY_LOSS_PCT}%, max {MAX_OPEN_POSITIONS} open")
     print()
 
     data = {}
@@ -832,7 +824,7 @@ def main():
         print(f"{len(df)} bars ({df['time'].min().date()} to {df['time'].max().date()}){suffix}")
 
     if "BTC-USD" not in data:
-        print("ERROR: BTC-USD data is required for the BTC regime filter — aborting.")
+        print("ERROR: BTC-USD data is required for the regime filter — aborting.")
         return
 
     print("\nRunning scanner backtest...")
