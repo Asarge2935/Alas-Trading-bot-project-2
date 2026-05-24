@@ -5,10 +5,10 @@
 `STRATEGY_1_REGIME_RS_SPEC.md` and `STRATEGY_2_BTC_DIRECTIONAL_SPEC.md`
 (kept for history). No code built against this yet — this doc is the
 single source of truth the implementation and gates will follow.
-**Provenance:** consolidates the user's three updates (2026-05-24):
-the strategy plan, the edge theory, and the frequency/sizing
-philosophy. Conflicts in the source material are reconciled below and
-flagged where overridden.
+**Provenance:** consolidates the user's four updates (2026-05-24):
+the strategy plan, the edge theory, the frequency/sizing philosophy,
+and the portfolio/correlation rules. Conflicts in the source material
+are reconciled below and flagged where overridden.
 
 ---
 
@@ -29,6 +29,13 @@ Two contradictions in the source material, resolved:
 Core philosophy (user, verbatim): *"The bot is not paid to trade. The
 bot is paid to wait."* No forced trades. If no edge appears, the
 correct result is **0 trades**.
+
+Operating frame (user): **scan everything, trade selectively, size
+intelligently, stop when risk limits are reached.** High scan
+frequency, low trade frequency, strict ranking, risk capped across
+correlated trades. The bot evaluates every asset / side / timeframe
+every candle, but a signal only becomes a trade if it is A+ AND
+portfolio risk limits still allow it (see §4a and §7).
 
 ---
 
@@ -91,6 +98,28 @@ share of losing trades.
 
 ---
 
+## 4a. Ranking when multiple A+ setups fire
+
+The bot scans all assets/sides every candle and may find more than one
+qualifying setup. It does **not** blindly take them all. Rank
+qualifying setups and prefer the best, subject to the §7 portfolio
+caps. Ranking criteria (in priority order):
+
+1. BTC regime alignment (strength of the regime signal)
+2. Relative strength (long) / weakness (short) — distance from the pack
+3. Breakout / flush quality (clean expansion vs marginal poke)
+4. Volume confirmation
+5. Distance to invalidation (tighter, well-defined stop preferred)
+6. Spread / fee impact (lower is better)
+7. Reward-to-risk potential
+
+**Correlation rule (critical):** BTC/ETH/SOL are highly correlated, so
+multiple same-direction signals are largely **one** crypto-direction
+bet, not independent trades. Therefore risk is capped *across*
+correlated trades, not per-trade in isolation (see §7).
+
+---
+
 ## 5. Entry (4H/6H)
 
 **Long** (risk-on only), all required:
@@ -131,16 +160,30 @@ Decision on bar close; fill next bar (no look-ahead).
   where `risk_per_contract = |entry − stop| × contract_multiplier`.
 - **Frequency: maximum 1 contract per asset per day. No minimum.**
   No-trade always allowed.
-- **Loss halts:** stop trading for the **day after 2 losses**; stop
-  for the **week after 4 losses**.
+
+**Portfolio / correlation risk caps (govern over per-trade risk):**
+- **Max total same-direction crypto risk: 2%.** Because BTC/ETH/SOL
+  longs (or shorts) are highly correlated, they count toward one
+  combined budget — not independent 1% slots.
+- When multiple A+ same-direction setups fire, **split** risk rather
+  than stack it:
+  - take the single best at 1%, OR
+  - top two at 0.75% each, OR
+  - all three at 0.5% each — never three full 1% positions.
+- **Max risk per asset: 1%.**
+
+**Loss limits (circuit breakers):**
+- **Max daily loss: 2%** → stop trading for the day. (≈ 2 losing
+  trades at 1%.)
+- **Max weekly loss: 5%** → stop trading for the week.
 
 **Phased scaling (do not scale by emotion — by rule):**
 
-| Phase | Trigger | Open positions | Per-asset | Notes |
+| Phase | Trigger | Open positions | Risk rule | Notes |
 |---|---|---|---|---|
-| 1 — Survival | until the bot proves itself | **1 total** | 1 contract | 1 trade/day max, no forced trades |
-| 2 — Validation | after 30 clean paper trades or 30 days | **2 total** | 1 contract/asset | still no forced trades |
-| 3 — Growth | after account grows AND edge proven | by formula | by formula | `contracts = floor(max_risk_$ / risk_per_contract)` |
+| 1 — Survival (current) | until the bot proves itself | **1 at a time** | 1% per trade; take highest-ranked only | daily-loss 2%, weekly-loss 5%, no forced trades |
+| 2 — Validation | after 30 clean paper trades or 30 days | **2 total** | max total same-direction 2%; max 1%/asset; split if all three fire | still no forced trades |
+| 3 — Growth | after account grows AND edge proven | by formula | `contracts = floor(max_risk_$ / risk_per_contract)`, caps still apply | scale by rule, not feel |
 
 Funding reality: at the current ~$100 available the account cannot
 fund even **one** contract (~$188 margin). Phase 1 live cannot begin
@@ -195,9 +238,10 @@ Per the edge definition (expectancy after all costs):
 | 20-day RS ranking | `universe.rank_by_return` exists |
 | 4H/6H bars | `data.resample_ohlcv` (4H) + native 6H |
 | Breakout + strong-close + BTC-confirm entry | **new** — extend `signals.py` |
+| Setup ranking when multiple fire (§4a) | **new** — selection layer |
 | Structure-or-1.5×ATR stop, R-targets, trail, time stop | partial in `btc_backtest` — **extend exits** |
 | Multi-asset, long/short, perp/dated cost | `multi_backtest.py` exists |
-| 1% sizing, contracts formula, loss halts, phase caps | **new** — risk layer (feature 3) |
+| 1% sizing, correlation-aware portfolio caps, daily/weekly loss limits, phase caps | **new** — risk layer (feature 3) |
 | Signal/paper/live execution | **new** — execution layer (feature 4) |
 | Gates report | partial — extend to expectancy + the §9 set |
 
