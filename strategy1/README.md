@@ -26,7 +26,8 @@ long/short BTC trend strategy. Spec:
 | Directional signal (`regime.directional_signal`) | ✅ | Strategy 2 |
 | BTC backtester (`btc_backtest.py`) | ✅ | Strategy 2 (single asset) |
 | Multi-asset backtester (`multi_backtest.py`) | ✅ | Strategy 2 (BTC/ETH/SOL) |
-| Indicator library (`indicators.py`) | ✅ | available, not yet wired to a strategy |
+| Indicator library (`indicators.py`) | ✅ | used by signals |
+| Selectable signals (`signals.py`) | ✅ | trend / ema_cross / macd / rsi / bollinger |
 | Multi-timeframe data (`data.fetch_candles` + `resample_ohlcv`) | ✅ | available |
 
 > **Execution reality:** the user's Crypto.com App account is spot-only
@@ -217,6 +218,31 @@ carry cost differs.** Trading dated futures on the same assets is the
 exists so you can see which instrument is *cheaper* for your holding
 period. Both `funding_daily` (perp) and `roll_cost` (dated) are
 placeholders until real funding/basis data is wired in.
+
+### Selectable entry/exit signals (`--signal`)
+
+Both backtesters accept `--signal` to choose which logic generates the
+long/short/flat decisions:
+
+| signal | logic | stance |
+|---|---|---|
+| `trend` (default) | close vs rising/falling SMA(50) | trend |
+| `ema_cross` | EMA(20) vs EMA(50) | trend |
+| `macd` | MACD line vs signal line | momentum |
+| `rsi` | oversold/overbought thresholds | mean-reversion |
+| `bollinger` | breakout beyond the bands | breakout |
+
+```bash
+python3 -m strategy1.btc_backtest  --in data_cache/ --signal ema_cross
+python3 -m strategy1.multi_backtest --in data_cache/ --signal macd
+```
+
+**Test ONE signal at a time** and read its gates. These are offered as
+separate single-hypothesis options, not a stack to blend and tune —
+blending and tuning until the curve looks good is the curve-fitting
+trap. (In a quick synthetic check, `macd` fired 140 trades and bled on
+fees while `ema_cross` fired 41 and held up — a reminder that trade
+frequency, not just direction, drives net results at real fees.)
 
 Read the verdicts honestly. Two likely failure modes: (1) fees eat the
 edge (compare retail vs promo); (2) the short side's edge is

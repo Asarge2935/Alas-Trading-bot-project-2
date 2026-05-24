@@ -35,6 +35,7 @@ import numpy as np
 import pandas as pd
 
 from strategy1.regime import directional_signal
+from strategy1.signals import build_signal, SIGNALS
 from strategy1.universe import load_all
 
 
@@ -405,8 +406,10 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else "")
     p.add_argument("--in", dest="in_dir", type=Path, default=Path("data_cache"))
     p.add_argument("--product", default="BTC-USD")
+    p.add_argument("--signal", choices=sorted(SIGNALS), default="trend",
+                   help="Entry/exit signal: trend (default), ema_cross, macd, rsi, bollinger")
     p.add_argument("--vol-aware", action="store_true",
-                   help="Use Definition B-dir (vol stand-down on longs)")
+                   help="trend signal only: Definition B-dir (vol stand-down on longs)")
     p.add_argument("--fee-preset", choices=sorted(FEE_PRESETS), default="perp_taker",
                    help="Coinbase fee: perp_taker (0.100%, default), "
                         "perp_maker (0.095%), spot_taker (1.20%, contrast only)")
@@ -431,15 +434,15 @@ def main(argv: list[str] | None = None) -> int:
                       funding_daily=args.funding_daily, roll_cost=args.roll_cost)
 
     df = all_data[args.product].sort_index()
-    signal = directional_signal(df["close"], vol_aware=args.vol_aware)
+    signal = build_signal(args.signal, df["close"], vol_aware=args.vol_aware)
 
     results = {mode: run_variant(df, signal, mode, costs) for mode in MODE_MAP}
     print(format_report(results, df, costs))
-    sig_note = "B-dir, vol-aware" if args.vol_aware else "A-dir, trend-only"
+    sig_note = f"{args.signal}" + (" (vol-aware)" if args.vol_aware and args.signal == "trend" else "")
     fee_note = (f"--taker-fee {taker}" if args.taker_fee is not None
                 else f"--fee-preset {args.fee_preset}")
-    print(f"\n(signal: Definition {sig_note}  |  fees: {fee_note})")
-    print("Tip: compare --fee-preset retail vs promo to see fee sensitivity.")
+    print(f"\n(signal: {sig_note}  |  instrument: {args.instrument}  |  fees: {fee_note})")
+    print("Tip: try --signal {trend,ema_cross,macd,rsi,bollinger}, one at a time.")
     return 0
 
 

@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from strategy1.regime import directional_signal
+from strategy1.signals import build_signal, SIGNALS
 from strategy1.universe import load_all
 from strategy1.btc_backtest import (
     CostModel, FEE_PRESETS, MODE_MAP, DEFAULT_SLIPPAGE, DEFAULT_FUNDING_DAILY,
@@ -68,13 +68,13 @@ def combine_portfolio(results: dict[str, VariantResult],
 
 
 def run_multi(all_data: dict, products: list[str], costs: CostModel,
-              vol_aware: bool) -> dict:
+              vol_aware: bool, signal_name: str = "trend") -> dict:
     """Run all variants on each product; return per-asset and portfolio results."""
     out: dict = {"per_asset": {}, "portfolio": {}, "signals": {}}
     available = [p for p in products if p in all_data]
     for p in available:
         df = all_data[p].sort_index()
-        sig = directional_signal(df["close"], vol_aware=vol_aware)
+        sig = build_signal(signal_name, df["close"], vol_aware=vol_aware)
         out["signals"][p] = sig
         out["per_asset"][p] = {m: run_variant(df, sig, m, costs) for m in MODE_MAP}
 
@@ -161,6 +161,8 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else "")
     p.add_argument("--in", dest="in_dir", type=Path, default=Path("data_cache"))
     p.add_argument("--products", nargs="*", default=DEFAULT_PRODUCTS)
+    p.add_argument("--signal", choices=sorted(SIGNALS), default="trend",
+                   help="Entry/exit signal: trend (default), ema_cross, macd, rsi, bollinger")
     p.add_argument("--vol-aware", action="store_true")
     p.add_argument("--fee-preset", choices=sorted(FEE_PRESETS), default="perp_taker")
     p.add_argument("--taker-fee", type=float, default=None)
@@ -184,10 +186,10 @@ def main(argv: list[str] | None = None) -> int:
     costs = CostModel(taker_fee=taker, slippage=args.slippage, instrument=args.instrument,
                       funding_daily=args.funding_daily, roll_cost=args.roll_cost)
 
-    res = run_multi(all_data, available, costs, args.vol_aware)
+    res = run_multi(all_data, available, costs, args.vol_aware, signal_name=args.signal)
     print(format_multi_report(res, all_data, costs))
-    sig_note = "B-dir vol-aware" if args.vol_aware else "A-dir trend-only"
-    print(f"\n(signal: {sig_note}  |  fee/side: {costs.per_side*100:.2f}%)")
+    sig_note = f"{args.signal}" + (" (vol-aware)" if args.vol_aware and args.signal == "trend" else "")
+    print(f"\n(signal: {sig_note}  |  instrument: {args.instrument}  |  fee/side: {costs.per_side*100:.2f}%)")
     return 0
 
 
