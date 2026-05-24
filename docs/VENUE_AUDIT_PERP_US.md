@@ -76,15 +76,19 @@ return fractions — but it must be solved before live.
   trading the three-asset strategy is not fundable at the current
   balance.** Either add funds, run fewer assets, or accept higher
   leverage (not recommended).
-- **Product ambiguity — dated vs perpetual.** The screen showed
-  "BTC 29 MAY 26 / nano Bitcoin **Futures**" — a *dated monthly* nano
-  future (expires, must be rolled), NOT the perpetual-style BTC-PERP.
-  These have different cost structures: dated futures incur a **roll
-  cost** each expiry + basis; perpetuals pay **funding**. The
-  backtester models a perpetual (daily funding drag). If the user
-  trades the dated nano future instead, reinterpret `funding_daily` as
-  an amortized roll/basis drag, or switch to BTC-PERP. **Decide which
-  instrument before trusting the cost model.**
+- **Product ambiguity — RESOLVED (2026-05-24).** The user located the
+  perpetual: "BTC PERP / nano BTC Perp Futures" (price $76,525,
+  notional $765.25, margin $188 at 4.1x, fee ~$0.92 = 0.1%). This is
+  the perpetual-style contract our backtester models (funding
+  mechanism, no expiry), so `funding_daily` is the correct cost lever
+  — it just needs a real funding series instead of the placeholder.
+  **Decision: trade the nano BTC PERP, not the dated nano future.**
+  The earlier "29 MAY 26" screen was the dated monthly future; ignore
+  it for this strategy.
+- **Funding constraint persists.** Even on the perp, 1 contract needs
+  ~$188 margin and the $100 available balance is blocked
+  "Insufficient funds." Unchanged conclusion: not fundable at current
+  balance for even one asset, let alone three.
 
 **Leverage.** Up to **10x**. This is *lower* than offshore venues
 (50–100x), which is a feature, not a bug — it aligns with the
