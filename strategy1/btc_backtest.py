@@ -66,7 +66,9 @@ FEE_PRESETS = {
     "spot_taker": 0.0120,    # 1.20% — Coinbase SPOT taker, for contrast only; do NOT use for perps
 }
 DEFAULT_SLIPPAGE = 0.0005       # 0.05% per side
-DEFAULT_FUNDING_DAILY = 0.0003  # 0.03%/day — PLACEHOLDER, needs real series
+DEFAULT_FUNDING_DAILY = 0.0003  # 0.03%/day — PLACEHOLDER (perp), needs real series
+DEFAULT_ROLL_COST = 0.0025      # per roll (dated future): ~2 fee legs + small basis, PLACEHOLDER
+DEFAULT_ROLL_DAYS = 30          # monthly expiry → roll cadence while in a position
 ATR_WINDOW = 14
 ATR_STOP_MULT = 2.0
 MAX_DRAWDOWN = 0.25             # MTM equity halt threshold
@@ -77,7 +79,13 @@ OOS_SPLIT = "2025-01-01"        # in-sample before, out-of-sample on/after
 class CostModel:
     taker_fee: float = FEE_PRESETS["perp_taker"]
     slippage: float = DEFAULT_SLIPPAGE
+    # instrument cost structure:
+    #   "perp"          → continuous funding drag (funding_daily on shorts)
+    #   "dated_future"  → no funding; a roll_cost every roll_days while in a position
+    instrument: str = "perp"
     funding_daily: float = DEFAULT_FUNDING_DAILY
+    roll_cost: float = DEFAULT_ROLL_COST
+    roll_days: int = DEFAULT_ROLL_DAYS
 
     @property
     def per_side(self) -> float:
@@ -131,6 +139,10 @@ def run_variant(df: pd.DataFrame, signal: pd.Series, mode: str,
     costs = costs or CostModel()
     cost_per_side = costs.per_side
     funding_daily = costs.funding_daily
+    is_dated = costs.instrument == "dated_future"
+    roll_cost = costs.roll_cost
+    roll_days = costs.roll_days
+    bars_since_roll = 0
     pos_map = MODE_MAP[mode]
     target = signal.map(pos_map).shift(1).fillna(0).astype(int)  # act next bar
     atr = _atr(df)
@@ -159,9 +171,14 @@ def run_variant(df: pd.DataFrame, signal: pd.Series, mode: str,
         if t > 0 and pos != 0:
             r = close / closes[t - 1] - 1.0
             pnl = pos * r
-            if pos == -1:
-                pnl -= funding_daily
+            if not is_dated and pos == -1:
+                pnl -= funding_daily            # perp: funding drag on shorts
             equity *= (1.0 + pnl)
+            if is_dated:                        # dated future: periodic roll cost
+                bars_since_roll += 1
+                if bars_since_roll >= roll_days:
+                    equity *= (1.0 - roll_cost)
+                    bars_since_roll = 0
 
         desired = target_arr[t]
 
@@ -194,6 +211,7 @@ def run_variant(df: pd.DataFrame, signal: pd.Series, mode: str,
                 entry_idx = t
                 a = atr_arr[t]
                 stop_frac = (ATR_STOP_MULT * a / close) if (a == a and close > 0) else None
+                bars_since_roll = 0          # fresh position → reset roll clock
             else:
                 entry_px = entry_equity = entry_date = entry_idx = stop_frac = None
             pos = desired
@@ -343,8 +361,12 @@ def format_report(results: dict[str, VariantResult], df: pd.DataFrame,
     lines.append("=" * 72)
     lines.append("BTC Directional Backtest — Strategy 2")
     lines.append(f"Period: {df.index.min().date()} → {df.index.max().date()}  ({len(df)} bars)")
+    if costs.instrument == "dated_future":
+        carry = f"dated_future: roll {costs.roll_cost*100:.2f}% every {costs.roll_days}d"
+    else:
+        carry = f"perp: short funding {costs.funding_daily*100:.2f}%/day"
     lines.append(f"Costs: taker={costs.taker_fee*100:.2f}% + slippage={costs.slippage*100:.2f}% "
-                 f"= {costs.per_side*100:.2f}%/side  |  short funding={costs.funding_daily*100:.2f}%/day")
+                 f"= {costs.per_side*100:.2f}%/side  |  {carry}")
     lines.append("=" * 72)
     lines.append(f"Benchmark buy-and-hold BTC: total_return={hodl_ret*100:+.1f}%  "
                  f"Sharpe={hodl_sharpe:.2f}  maxDD={hodl_dd*100:.1f}%")
@@ -391,8 +413,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--taker-fee", type=float, default=None,
                    help="Override fee per side as a fraction (e.g. 0.001 for 0.10%)")
     p.add_argument("--slippage", type=float, default=DEFAULT_SLIPPAGE)
+    p.add_argument("--instrument", choices=["perp", "dated_future"], default="perp",
+                   help="perp (funding) or dated_future (roll cost at each expiry)")
     p.add_argument("--funding-daily", type=float, default=DEFAULT_FUNDING_DAILY,
-                   help="Daily short funding drag (PLACEHOLDER until real series wired)")
+                   help="Perp daily short funding drag (PLACEHOLDER until real series)")
+    p.add_argument("--roll-cost", type=float, default=DEFAULT_ROLL_COST,
+                   help="Dated-future cost per roll (PLACEHOLDER; ~2 fee legs + basis)")
     args = p.parse_args(argv)
 
     all_data = load_all(args.in_dir)
@@ -401,8 +427,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     taker = args.taker_fee if args.taker_fee is not None else FEE_PRESETS[args.fee_preset]
-    costs = CostModel(taker_fee=taker, slippage=args.slippage,
-                      funding_daily=args.funding_daily)
+    costs = CostModel(taker_fee=taker, slippage=args.slippage, instrument=args.instrument,
+                      funding_daily=args.funding_daily, roll_cost=args.roll_cost)
 
     df = all_data[args.product].sort_index()
     signal = directional_signal(df["close"], vol_aware=args.vol_aware)

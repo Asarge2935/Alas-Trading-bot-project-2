@@ -199,6 +199,25 @@ is spot-executable on all three; the short variants need Coinbase
 perps (all three have nano perps; mind the small-account sizing caveat
 in `docs/VENUE_AUDIT_PERP_US.md`).
 
+### Instrument: perp vs dated future
+
+The same directional strategy can be costed as a **perpetual** (the
+default — continuous funding) or a **dated monthly future** (no
+funding, but a roll cost at each expiry). Switch with `--instrument`:
+
+```bash
+python3 -m strategy1.multi_backtest --in data_cache/ --instrument perp
+python3 -m strategy1.multi_backtest --in data_cache/ --instrument dated_future
+python3 -m strategy1.btc_backtest  --in data_cache/ --instrument dated_future --roll-cost 0.0025
+```
+
+The trend signal and P&L are identical between the two — **only the
+carry cost differs.** Trading dated futures on the same assets is the
+*same exposure* as the perp, so it does not add edge; this switch
+exists so you can see which instrument is *cheaper* for your holding
+period. Both `funding_daily` (perp) and `roll_cost` (dated) are
+placeholders until real funding/basis data is wired in.
+
 Read the verdicts honestly. Two likely failure modes: (1) fees eat the
 edge (compare retail vs promo); (2) the short side's edge is
 concentrated in the 2022 downtrend (gate 6/7), i.e. regime-dependent.

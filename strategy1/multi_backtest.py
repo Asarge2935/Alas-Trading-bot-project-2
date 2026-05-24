@@ -30,8 +30,8 @@ from strategy1.regime import directional_signal
 from strategy1.universe import load_all
 from strategy1.btc_backtest import (
     CostModel, FEE_PRESETS, MODE_MAP, DEFAULT_SLIPPAGE, DEFAULT_FUNDING_DAILY,
-    VariantResult, run_variant, evaluate, gate_report, buy_and_hold, _sharpe,
-    _max_drawdown,
+    DEFAULT_ROLL_COST, VariantResult, run_variant, evaluate, gate_report,
+    buy_and_hold, _sharpe, _max_drawdown,
 )
 
 DEFAULT_PRODUCTS = ["BTC-USD", "ETH-USD", "SOL-USD"]
@@ -101,7 +101,10 @@ def format_multi_report(res: dict, all_data: dict, costs: CostModel) -> str:
     lines: list[str] = []
     lines.append("=" * 74)
     lines.append("Multi-Asset Directional Backtest — BTC / ETH / SOL (independent)")
-    lines.append(f"Costs: {costs.per_side*100:.2f}%/side  |  short funding {costs.funding_daily*100:.2f}%/day")
+    carry = (f"dated_future: roll {costs.roll_cost*100:.2f}% every {costs.roll_days}d"
+             if costs.instrument == "dated_future"
+             else f"perp: short funding {costs.funding_daily*100:.2f}%/day")
+    lines.append(f"Costs: {costs.per_side*100:.2f}%/side  |  {carry}")
     lines.append("=" * 74)
 
     # Per-asset, per-variant.
@@ -162,7 +165,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--fee-preset", choices=sorted(FEE_PRESETS), default="perp_taker")
     p.add_argument("--taker-fee", type=float, default=None)
     p.add_argument("--slippage", type=float, default=DEFAULT_SLIPPAGE)
+    p.add_argument("--instrument", choices=["perp", "dated_future"], default="perp",
+                   help="perp (funding) or dated_future (roll cost at each expiry)")
     p.add_argument("--funding-daily", type=float, default=DEFAULT_FUNDING_DAILY)
+    p.add_argument("--roll-cost", type=float, default=DEFAULT_ROLL_COST)
     args = p.parse_args(argv)
 
     all_data = load_all(args.in_dir)
@@ -175,7 +181,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     taker = args.taker_fee if args.taker_fee is not None else FEE_PRESETS[args.fee_preset]
-    costs = CostModel(taker_fee=taker, slippage=args.slippage, funding_daily=args.funding_daily)
+    costs = CostModel(taker_fee=taker, slippage=args.slippage, instrument=args.instrument,
+                      funding_daily=args.funding_daily, roll_cost=args.roll_cost)
 
     res = run_multi(all_data, available, costs, args.vol_aware)
     print(format_multi_report(res, all_data, costs))
