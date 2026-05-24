@@ -87,6 +87,46 @@ def regime_b(btc_close: pd.Series) -> pd.Series:
     )
 
 
+def directional_signal(btc_close: pd.Series, vol_aware: bool = False) -> pd.Series:
+    """Three-state BTC trend signal for Strategy 2: long / short / flat.
+
+    See docs/STRATEGY_2_BTC_DIRECTIONAL_SPEC.md §3.
+
+    Trend rule (Definition A-dir):
+      - 'long'  if close > SMA(50) AND SMA(50) rising over 10 days.
+      - 'short' if close < SMA(50) AND SMA(50) falling over 10 days.
+      - 'flat'  otherwise (conflicting signals).
+
+    With vol_aware=True (Definition B-dir): a 'long' is downgraded to
+    'flat' when realized 20-day vol is in the top 20% of its trailing
+    1Y distribution. The vol stand-down applies to longs only — shorts
+    are deliberately left intact because downside-vol expansion is when
+    shorts tend to pay.
+
+    Bars without enough history for SMA / slope / vol-percentile get
+    'flat' as a conservative default.
+    """
+    close = btc_close.astype(float)
+    sma = _sma(close, SMA_WINDOW)
+    prev_sma = sma.shift(SMA_SLOPE_LOOKBACK)
+
+    long_cond = (close > sma) & (sma > prev_sma)
+    short_cond = (close < sma) & (sma < prev_sma)
+
+    if vol_aware:
+        vol = _realized_vol(close, VOL_WINDOW)
+        vol_pctile = vol.rolling(window=VOL_PERCENTILE_WINDOW,
+                                 min_periods=VOL_PERCENTILE_WINDOW).rank(pct=True)
+        stressed = (vol_pctile >= VOL_PERCENTILE_THRESHOLD).fillna(False)
+        long_cond = long_cond & ~stressed
+
+    long_cond = long_cond.fillna(False)
+    short_cond = short_cond.fillna(False)
+
+    signal = np.where(long_cond, "long", np.where(short_cond, "short", "flat"))
+    return pd.Series(signal, index=close.index, name="directional")
+
+
 def summarize(regime: pd.Series) -> dict:
     """Quick stats for sanity-checking a regime series."""
     total = len(regime)

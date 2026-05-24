@@ -6,13 +6,31 @@ candidate strategy after the 2026-05 reset. **Spec:**
 
 ## Status
 
-| Phase | Status |
-|---|---|
-| Data layer | ✅ implemented |
-| Regime classifier | ✅ implemented |
-| Relative-strength ranker | ✅ implemented |
-| Backtester | ⏳ next |
-| Report generator (10 gates) | ⏳ |
+This package now hosts two related strategies that share the data
+layer and regime logic:
+
+**Strategy 1 — RS rotation** (paused): the original multi-asset
+relative-strength rotation. Data layer, regime classifier, and RS
+ranker are implemented; the rotation backtester was never built
+because the user redirected the project to BTC-only.
+
+**Strategy 2 — BTC directional** (current focus): single-instrument
+long/short BTC trend strategy. Spec:
+[`docs/STRATEGY_2_BTC_DIRECTIONAL_SPEC.md`](../docs/STRATEGY_2_BTC_DIRECTIONAL_SPEC.md).
+
+| Component | Status | Used by |
+|---|---|---|
+| Data layer (`data.py`, `quality.py`) | ✅ | both |
+| Universe + RS ranker (`universe.py`) | ✅ | Strategy 1 only |
+| Regime classifier (`regime.py`) | ✅ | both |
+| Directional signal (`regime.directional_signal`) | ✅ | Strategy 2 |
+| BTC backtester (`btc_backtest.py`) | ✅ | Strategy 2 |
+
+> **Execution reality:** the user's Crypto.com App account is spot-only
+> and cannot short. Only the `long_flat` variant is executable today.
+> `short_flat` and `long_short` are backtested to *measure* whether the
+> short side has edge — not because they can be traded now. See the
+> spec §0 and `docs/VENUE_AUDIT_CRYPTO_COM_APP.md`.
 
 No execution wiring exists. None will exist until the data quality
 report passes and the backtest produces a verdict.
@@ -106,6 +124,23 @@ Both rankings enforce point-in-time honesty:
 - Minimum 120 days of history on the as-of date (no listing pumps).
 - A bar must exist on the as-of date itself (no stale prices).
 - All windows look strictly backward from the as-of date.
+
+### 5. BTC directional backtest (Strategy 2 — current focus)
+
+```bash
+python -m strategy1.btc_backtest --in data_cache/            # Definition A-dir (trend only)
+python -m strategy1.btc_backtest --in data_cache/ --vol-aware # Definition B-dir (vol stand-down on longs)
+```
+
+Runs three variants (`long_flat`, `short_flat`, `long_short`) plus a
+buy-and-hold benchmark, and scores each against the spec §7 gates.
+Prints a verdict per variant. Reminder printed at the end: only
+`long_flat` is executable on the current spot account.
+
+Read the verdicts honestly. The expected modal outcome is that the
+short side's edge is concentrated in the 2022 downtrend (gate 6/7),
+which would mean it is regime-dependent and **not** a reason to open
+a perp venue.
 
 ### 4. BTC regime classification
 
