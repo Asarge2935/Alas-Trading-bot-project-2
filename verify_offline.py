@@ -165,9 +165,15 @@ def main():
         print(f"[OK] max open positions observed: {max_open} "
               f"(limit {bt.MAX_OPEN_POSITIONS})")
 
-    # 9. Run the report so we exercise that path too.
+    # 9. Run the report and gate report so we exercise those paths too.
     print()
     bt.report_summary(trades, equity_curve)
+    gate_lines, gate_pass = bt.gate_report(trades, equity_curve, data)
+    print("\n".join(gate_lines))
+    # The gate VERDICT on synthetic data is meaningless; we only assert the
+    # gate report RUNS without error and returns a bool.
+    if not isinstance(gate_pass, bool):
+        failures.append("gate_report did not return a bool verdict")
 
     # 10. Done.
     if failures:

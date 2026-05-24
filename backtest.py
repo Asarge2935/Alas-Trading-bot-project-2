@@ -38,6 +38,7 @@ Outputs:
     Console summary report
 """
 
+import argparse
 import csv
 import os
 import time
@@ -55,7 +56,7 @@ from typing import Optional
 
 ASSETS = ["BTC-USD", "ETH-USD", "SOL-USD"]
 TIMEFRAME_SECONDS = 21600          # 6H entry timeframe
-DAYS_BACK = 365
+DAYS_BACK = 1460                   # ~4 years — the spec gates need >= 30 trades
 BARS_PER_DAY = 86400 // TIMEFRAME_SECONDS
 
 # --- Regime (BTC, daily) ---
@@ -107,6 +108,14 @@ MIN_FEE_USD = 0.15
 SLIPPAGE_NORMAL_PCT = 0.0010
 SLIPPAGE_HIGH_VOL_PCT = 0.0020
 FUNDING_DRAG_MONTHLY_PCT = 0.005   # PLACEHOLDER — wire real funding before live
+
+# --- Validation gates (STRATEGY_SPEC.md §9) ---
+GATE_MIN_TRADES = 30
+GATE_MIN_PF = 1.3
+GATE_MAX_DD_PCT = 25.0
+GATE_MAX_TRADE_SHARE = 0.25        # no single trade > 25% of net P&L
+GATE_OOS_PF_RATIO = 0.75           # OOS PF must be >= 0.75x in-sample PF
+OOS_SPLIT_FRAC = 0.70              # first 70% of the window = in-sample
 
 OUTPUT_DIR = "./backtest_output"
 TRADES_CSV = os.path.join(OUTPUT_DIR, "trades.csv")
@@ -797,11 +806,112 @@ def report_summary(trades, equity_curve):
 
 
 # ---------------------------------------------------------------------------
+# Validation gates (STRATEGY_SPEC.md §9)
+# ---------------------------------------------------------------------------
+
+def _profit_factor(trades):
+    gains = sum(t.net_pnl_usd for t in trades if t.net_pnl_usd > 0)
+    losses = -sum(t.net_pnl_usd for t in trades if t.net_pnl_usd < 0)
+    if losses == 0:
+        return float("inf") if gains > 0 else 0.0
+    return gains / losses
+
+
+def _daily_sharpe(equity_or_close):
+    """Annualized Sharpe from a time-indexed series, resampled to daily."""
+    daily = equity_or_close.resample("1D").last().dropna()
+    rets = daily.pct_change().dropna()
+    if len(rets) < 2 or rets.std() == 0:
+        return 0.0
+    return float(rets.mean() / rets.std() * np.sqrt(365))
+
+
+def equal_weight_hodl(data_by_symbol):
+    """Equal-weight buy-and-hold of the universe, time-indexed and normalized."""
+    curves = []
+    for df in data_by_symbol.values():
+        s = df.set_index("time")["close"].astype(float)
+        curves.append(s / s.iloc[0])
+    h = pd.concat(curves, axis=1).dropna().mean(axis=1)
+    return h
+
+
+def gate_report(trades, equity_curve, data_by_symbol):
+    """Score a run against the spec's promotion gates. Returns (lines, all_pass)."""
+    lines = ["", "=" * 70, "VALIDATION GATES (STRATEGY_SPEC.md §9)", "=" * 70]
+    if not trades:
+        lines.append("No trades — cannot evaluate. (Valid outcome; not a pass.)")
+        return lines, False
+
+    eq = pd.Series([p["equity"] for p in equity_curve],
+                   index=pd.to_datetime([p["time"] for p in equity_curve]))
+    hodl = equal_weight_hodl(data_by_symbol)
+
+    # In-sample / out-of-sample split by time.
+    first_t, last_t = eq.index.min(), eq.index.max()
+    split_t = first_t + (last_t - first_t) * OOS_SPLIT_FRAC
+    is_trades = [t for t in trades if (t.exit_time or t.entry_time) < split_t]
+    oos_trades = [t for t in trades if (t.exit_time or t.entry_time) >= split_t]
+
+    n = len(trades)
+    pf = _profit_factor(trades)
+    avg_r = float(np.mean([t.r_multiple for t in trades]))
+    net = sum(t.net_pnl_usd for t in trades)
+    max_dd = max((p["drawdown_pct"] for p in equity_curve), default=0.0)
+    strat_sharpe = _daily_sharpe(eq)
+    hodl_sharpe = _daily_sharpe(hodl)
+    is_pf, oos_pf = _profit_factor(is_trades), _profit_factor(oos_trades)
+    top_share = (max(t.net_pnl_usd for t in trades) / net) if net > 0 else float("nan")
+
+    def fmt_pf(x):
+        return "inf" if x == float("inf") else f"{x:.2f}"
+
+    checks = []
+    checks.append(("1 sample >= 30", n >= GATE_MIN_TRADES, f"{n} trades"))
+    checks.append(("2 expectancy > 0", net > 0 and avg_r > 0,
+                   f"net=${net:+.2f}, avgR={avg_r:+.2f}"))
+    checks.append(("3 profit factor >= 1.3", pf >= GATE_MIN_PF, f"PF={fmt_pf(pf)}"))
+    checks.append(("4 beats HODL Sharpe", strat_sharpe >= hodl_sharpe,
+                   f"strat={strat_sharpe:.2f} vs HODL={hodl_sharpe:.2f}"))
+    checks.append(("5 maxDD < 25%", max_dd < GATE_MAX_DD_PCT, f"{max_dd:.1f}%"))
+    if net > 0:
+        checks.append(("6 no trade > 25% P&L", top_share <= GATE_MAX_TRADE_SHARE,
+                       f"top trade={top_share*100:.0f}% of net"))
+    else:
+        checks.append(("6 no trade > 25% P&L", False, "n/a (net P&L <= 0)"))
+    if is_pf not in (0.0, float("inf")) and oos_trades:
+        g7 = oos_pf >= GATE_OOS_PF_RATIO * is_pf
+        checks.append(("7 OOS PF >= 0.75x IS", g7,
+                       f"IS={fmt_pf(is_pf)} OOS={fmt_pf(oos_pf)} "
+                       f"({len(is_trades)}/{len(oos_trades)} trades)"))
+    else:
+        checks.append(("7 OOS PF >= 0.75x IS", False,
+                       f"insufficient split (IS={fmt_pf(is_pf)}, "
+                       f"{len(is_trades)} IS / {len(oos_trades)} OOS trades)"))
+
+    all_pass = True
+    for name, passed, detail in checks:
+        all_pass = all_pass and passed
+        lines.append(f"  [{'PASS' if passed else 'FAIL'}] {name:<24} {detail}")
+    lines.append("-" * 70)
+    lines.append(f"  VERDICT: {'PROMOTE to 30-day paper trade' if all_pass else 'REJECTED'}")
+    lines.append("  (Passing only qualifies for paper trading — it does not approve live.)")
+    return lines, all_pass
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-def main():
-    print(f"Backtest config: {DAYS_BACK} days, 6H bars, assets: {', '.join(ASSETS)}")
+def main(argv=None):
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[1] if __doc__ else "")
+    p.add_argument("--days", type=int, default=DAYS_BACK,
+                   help=f"Days of 6H history to fetch (default {DAYS_BACK}; "
+                        f"~1460 ≈ 4 years for a real sample)")
+    args = p.parse_args(argv)
+    days_back = args.days
+
+    print(f"Backtest config: {days_back} days, 6H bars, assets: {', '.join(ASSETS)}")
     print(f"Regime: BTC 1D EMA{REGIME_EMA_SLOW} (3-state)  |  RS: {RS_LOOKBACK_DAYS}d return")
     print(f"Entry: {BREAKOUT_LOOKBACK}-bar breakout + strong close + BTC confirm")
     print(f"Risk: {RISK_PCT*100:.0f}%/trade, daily-loss {MAX_DAILY_LOSS_PCT}%, "
@@ -811,7 +921,7 @@ def main():
     data = {}
     for symbol in ASSETS:
         print(f"Fetching {symbol} ...", end=" ", flush=True)
-        df = fetch_candles(symbol, TIMEFRAME_SECONDS, DAYS_BACK)
+        df = fetch_candles(symbol, TIMEFRAME_SECONDS, days_back)
         raw_count = len(df)
         df = drop_incomplete_candles(df, TIMEFRAME_SECONDS)
         if df.empty:
@@ -834,6 +944,8 @@ def main():
     export_trades_csv(trades, TRADES_CSV)
     export_equity_csv(equity_curve, EQUITY_CSV)
     report_summary(trades, equity_curve)
+    lines, _ = gate_report(trades, equity_curve, data)
+    print("\n".join(lines))
 
 
 if __name__ == "__main__":
