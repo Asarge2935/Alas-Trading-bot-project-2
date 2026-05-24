@@ -1,5 +1,9 @@
 # Strategy 2 — Directional (Long / Short / Flat) on BTC / ETH / SOL
 
+> **⚠ SUPERSEDED (2026-05-24)** by `docs/STRATEGY_SPEC.md` (the canonical
+> strategy). The `strategy1/` backtester for this spec is retained as a
+> research library. Kept for history.
+
 **Status:** specification. Backtester implemented; no live execution.
 **Current focus:** the user narrowed the universe to **BTC, ETH, and
 SOL**, running the **same directional long/short strategy independently

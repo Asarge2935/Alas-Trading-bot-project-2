@@ -1,5 +1,8 @@
 # Strategy 1 — Regime + Relative Strength Rotation
 
+> **⚠ SUPERSEDED (2026-05-24)** by `docs/STRATEGY_SPEC.md` (the canonical
+> strategy). Kept for history.
+
 **Status:** specification only. No code, no backtest, no execution.
 **Venue dependence:** **none.** Designed to run on spot (long-only)
 or perps (long/short), so it can proceed in parallel with the

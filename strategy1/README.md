@@ -1,5 +1,13 @@
 # strategy1 — Regime + Relative Strength Rotation
 
+> ## ⚠ LEGACY (2026-05-24)
+> The canonical strategy is now [`docs/STRATEGY_SPEC.md`](../docs/STRATEGY_SPEC.md),
+> implemented in the repo-root `backtest.py`. This `strategy1/` package is
+> retained as a **research library** — its regime classifier, relative-
+> strength ranker, and indicator functions are useful building blocks —
+> but the Strategy 1 / Strategy 2 specs and their backtesters below are
+> **superseded**. Do not treat them as the active strategy.
+
 This package is the implementation track for the project's first
 candidate strategy after the 2026-05 reset. **Spec:**
 [`docs/STRATEGY_1_REGIME_RS_SPEC.md`](../docs/STRATEGY_1_REGIME_RS_SPEC.md).

@@ -1,5 +1,13 @@
 # Sample Run — Alas Trading Bot Backtester
 
+> ## ⚠ Partially historical (2026-05-24)
+> The run mechanics below (how to invoke, spot proxy, dropped candles,
+> funding placeholder) still apply. Any references to the **v2** strategy
+> rules (RSI entries, 6-asset universe, 2/3/6-ATR exits) are superseded by
+> the v3 canonical strategy in `docs/STRATEGY_SPEC.md`. The current
+> universe is BTC/ETH/SOL and `backtest.py` now prints a validation-gate
+> verdict. Default window is ~4 years; use `--days` to override.
+
 This document is a how-to-run guide and an explanation of what the
 output should look like. It does **not** include live API output —
 the user has not green-lit hitting Coinbase's public API from this
