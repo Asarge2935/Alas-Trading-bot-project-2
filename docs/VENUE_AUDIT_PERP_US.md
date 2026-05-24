@@ -68,28 +68,57 @@ availability must be confirmed** — some states (historically NY, and
 a handful of others for derivatives) can differ. **Ohio is not on any
 known exclusion list, but this must be verified at signup.**
 
-**Costs vs our backtest — IMPORTANT CORRECTION.** An earlier draft of
-this audit cited a ~0.02% taker fee. That was wrong: 0.02–0.05% are
-high-volume / promotional rates. The **realistic retail taker fee for
-a starting ~$500 account is 0.60%** (0.40% maker), per Coinbase's
-tiered Advanced fee schedule. There is a temporary promo (0.03% taker
-/ 0.00% maker) that may or may not be live for the user.
+**Costs — CORRECTED with the user's actual Coinbase fee schedule.**
+This audit went through two wrong fee numbers before landing on the
+real one. For the record:
+- First draft: ~0.02% taker (wrong — that's a high-volume rate).
+- Second draft: 0.60% taker (wrong — that is the Coinbase **spot**
+  *maker* rate; I conflated spot with derivatives).
+- **Correct, per the user's account:** the bot trades **derivatives
+  (perps)**, and Coinbase derivatives fees at Intro 1 (current tier,
+  <$10k 30-day volume/balance) are **0.095% maker / 0.100% taker**
+  per contract, plus a **$0.15/contract minimum** and a **0.10%
+  liquidation fee** if force-closed.
 
-This is the single most important economic fact in this audit. The
-backtester's old 0.20% placeholder was **too low**, not too high.
-At 0.60%/side, a strategy that flips long↔short frequently is
-devastated by fees:
+For contrast, Coinbase **spot** Intro 1 is 0.60% maker / **1.20%
+taker** — ~12x the perp taker rate. The bot does not trade spot, so
+the perp rate governs.
 
-> Synthetic check, same 79-trade strategy:
-> **retail (0.60%): −60.6% total return** vs **promo (0.03%): −2.7%.**
+Why this matters and the nuances:
+- Round-trip perp cost is ~**0.20% taker** + slippage, not the ~1.2%
+  I previously feared. A trend strategy that trades ~weekly is very
+  fee-survivable at this rate.
+- The **$0.15/contract minimum** is negligible for nano BTC
+  (~$800 notional → 0.10% = ~$0.80 > $0.15). It only bites on
+  sub-$150 positions. Not modeled.
+- The **maker/taker gap on perps is tiny** (0.095 vs 0.100), unlike
+  spot. So routing limit orders to capture maker barely helps on
+  perps — don't contort the strategy for it.
+- **Liquidation fee** (+0.10%) is avoided by the stop + no-high-
+  leverage rule. Not modeled.
 
-The takeaway: on retail Coinbase fees, a high-turnover BTC flip
-strategy is almost certainly uneconomic. Viability depends on either
-(a) qualifying for the promo/low-fee tier, (b) drastically reducing
-trade frequency, or (c) the per-trade edge being large enough to clear
-~1.2% round-trip costs. The backtester now models this with a
-`--fee-preset {retail,promo,hivol}` switch; **run `retail` first** and
-treat `promo` as the optimistic bound.
+Fee-sensitivity on the same synthetic 79-trade strategy:
+
+> perp 0.10%: −12.9% · (wrong) 0.60%: −60.6% · spot 1.20%: −84.9%
+
+The backtester now defaults to `--fee-preset perp_taker` (0.100%).
+`perp_maker` (0.095%) and `spot_taker` (1.20%, for contrast only) are
+also available.
+
+**Tier ladder & "balance trick".** Coinbase tiers are set by 30-day
+volume **or** total balance, whichever is higher. The detailed ladder
+the user supplied is a **spot** ladder (Intro 1 0.60/1.20 → Intro 2 at
+$10k 0.40/0.80 → … → VIP 8 at $250M 0.00/0.02). Because perp fees are
+already only 0.10% at Intro 1, climbing tiers helps perps far less
+than it helps spot. Reaching $10k balance for Intro 2 is a "someday"
+consideration at a ~$500 account, and consolidating long-term holdings
+onto Coinbase to hit it would conflict with the project rule that the
+bot must never touch long-term spot holdings. **VIP status-match**
+(submitting another venue's volume to fast-track a tier) requires
+meaningful *trading volume* elsewhere, not holdings; Crypto.com spot
+*holdings* would not qualify, and at this scale it is not worth
+pursuing. Bottom line: the perp fee is already low; do not reorganize
+your finances chasing a tier that mainly benefits spot.
 
 Funding remains a flat 0.03%/day placeholder and still needs a real
 BTC-PERP series.

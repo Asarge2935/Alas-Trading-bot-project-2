@@ -38,21 +38,32 @@ from strategy1.regime import directional_signal
 from strategy1.universe import load_all
 
 
-# --- cost / risk parameters (placeholders; see spec §4-§5) ----------------
 # --- cost / risk parameters -----------------------------------------------
-# Coinbase US Perpetual-Style Futures fees are tiered by 30-day volume.
-# A starting ~$500 account sits in the lowest tier. Verified figures
-# (2026, public fee schedule — confirm against the user's actual tier):
-#   retail (<$10k/mo): 0.60% taker / 0.40% maker
-#   promo (temporary):  0.03% taker / 0.00% maker
-#   high-vol (>$400M):  0.05% taker / 0.00% maker
-# We model TAKER fills (a trend bot crossing the spread is a taker) and
-# add a slippage allowance on top. These are intentionally pessimistic
-# defaults; override per the user's confirmed tier.
+# The bot trades Coinbase DERIVATIVES (perps), so the relevant fees are
+# the derivatives rates — NOT the much higher Coinbase spot fees
+# (spot Intro 1 is 0.60% maker / 1.20% taker). Per the user's actual
+# Coinbase Advanced fee schedule:
+#
+#   Derivatives, Intro 1 (current tier, <$10k 30-day volume/balance):
+#       0.095% maker / 0.100% taker  per contract
+#       + $0.15 minimum per contract (NFA/exchange/clearing)
+#       + 0.10% liquidation fee if Coinbase force-closes a position
+#
+# Notes:
+# - For nano BTC (~1/100 BTC ≈ $800 notional), 0.10% = ~$0.80 > the
+#   $0.15 floor, so the per-contract minimum does not bind at sane
+#   sizes. It is NOT modeled here; it only matters for sub-$150
+#   positions. Documented, not coded — see spec.
+# - The maker/taker gap on perps is tiny (0.095 vs 0.100), unlike spot.
+#   So limit-order optimization barely helps here. We model taker.
+# - The liquidation fee is avoided by the stop + no-high-leverage rule;
+#   not modeled.
+# - Derivatives fees may also ladder down with volume; only the Intro 1
+#   rate is known, so that is the default.
 FEE_PRESETS = {
-    "retail": 0.0060,   # 0.60% taker — the realistic starting case
-    "promo":  0.0003,   # 0.03% taker — only if the promo is live
-    "hivol":  0.0005,   # 0.05% taker — high-volume tier, not reachable soon
+    "perp_taker": 0.0010,    # 0.100% — Intro 1 derivatives taker (default)
+    "perp_maker": 0.00095,   # 0.095% — if filling as maker (limit orders)
+    "spot_taker": 0.0120,    # 1.20% — Coinbase SPOT taker, for contrast only; do NOT use for perps
 }
 DEFAULT_SLIPPAGE = 0.0005       # 0.05% per side
 DEFAULT_FUNDING_DAILY = 0.0003  # 0.03%/day — PLACEHOLDER, needs real series
@@ -64,7 +75,7 @@ OOS_SPLIT = "2025-01-01"        # in-sample before, out-of-sample on/after
 
 @dataclass
 class CostModel:
-    taker_fee: float = FEE_PRESETS["retail"]
+    taker_fee: float = FEE_PRESETS["perp_taker"]
     slippage: float = DEFAULT_SLIPPAGE
     funding_daily: float = DEFAULT_FUNDING_DAILY
 
@@ -374,11 +385,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--product", default="BTC-USD")
     p.add_argument("--vol-aware", action="store_true",
                    help="Use Definition B-dir (vol stand-down on longs)")
-    p.add_argument("--fee-preset", choices=sorted(FEE_PRESETS), default="retail",
-                   help="Coinbase taker-fee tier: retail (0.60%, default), "
-                        "promo (0.03%), hivol (0.05%)")
+    p.add_argument("--fee-preset", choices=sorted(FEE_PRESETS), default="perp_taker",
+                   help="Coinbase fee: perp_taker (0.100%, default), "
+                        "perp_maker (0.095%), spot_taker (1.20%, contrast only)")
     p.add_argument("--taker-fee", type=float, default=None,
-                   help="Override taker fee as a fraction (e.g. 0.006 for 0.60%)")
+                   help="Override fee per side as a fraction (e.g. 0.001 for 0.10%)")
     p.add_argument("--slippage", type=float, default=DEFAULT_SLIPPAGE)
     p.add_argument("--funding-daily", type=float, default=DEFAULT_FUNDING_DAILY,
                    help="Daily short funding drag (PLACEHOLDER until real series wired)")

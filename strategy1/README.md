@@ -161,28 +161,24 @@ Both rankings enforce point-in-time honesty:
 
 ### 5. BTC directional backtest (Strategy 2 — current focus)
 
-```bash
-python -m strategy1.btc_backtest --in data_cache/            # Definition A-dir (trend only)
-python -m strategy1.btc_backtest --in data_cache/ --vol-aware # Definition B-dir (vol stand-down on longs)
-```
-
 Runs three variants (`long_flat`, `short_flat`, `long_short`) plus a
 buy-and-hold benchmark, and scores each against the spec §7 gates.
 
-**Fees dominate this strategy. Always run `--fee-preset retail`
-first** — that is the realistic Coinbase taker fee (0.60%) for a
-starting ~$500 account. `promo` (0.03%) is the optimistic bound only
-if the promotional rate is live for you. The gap is enormous: in a
-synthetic 79-trade test, the same strategy returned **−60.6% at retail
-fees vs −2.7% at promo fees.** A high-turnover flip strategy is very
-likely uneconomic on retail fees — that is a real, expected finding,
-not a bug.
+**Fees: the bot trades perps, so the default is Coinbase's derivatives
+taker rate, 0.100% (`--fee-preset perp_taker`)** — NOT the much higher
+spot rate (1.20% taker). Round-trip is ~0.20% + slippage, which a
+~weekly-trading strategy can survive. Higher-frequency trading still
+multiplies this, so prefer the slowest timeframe that captures the edge.
 
 ```bash
-python -m strategy1.btc_backtest --in data_cache/                       # retail fees (default)
-python -m strategy1.btc_backtest --in data_cache/ --fee-preset promo    # optimistic bound
-python -m strategy1.btc_backtest --in data_cache/ --vol-aware           # Definition B-dir
+python -m strategy1.btc_backtest --in data_cache/                        # perp 0.10% (default)
+python -m strategy1.btc_backtest --in data_cache/ --fee-preset perp_maker # 0.095% (limit fills)
+python -m strategy1.btc_backtest --in data_cache/ --fee-preset spot_taker # 1.20% (contrast only)
+python -m strategy1.btc_backtest --in data_cache/ --vol-aware            # Definition B-dir
 ```
+
+Fee sensitivity on the same synthetic 79-trade strategy:
+**perp 0.10% → −12.9%  ·  (old wrong) 0.60% → −60.6%  ·  spot 1.20% → −84.9%.**
 
 Read the verdicts honestly. Two likely failure modes: (1) fees eat the
 edge (compare retail vs promo); (2) the short side's edge is
