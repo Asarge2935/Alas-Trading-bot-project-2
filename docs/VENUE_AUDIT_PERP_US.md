@@ -94,6 +94,20 @@ treat `promo` as the optimistic bound.
 Funding remains a flat 0.03%/day placeholder and still needs a real
 BTC-PERP series.
 
+**Coinbase One does NOT reduce perp fees.** The Coinbase One
+subscription (Basic $4.99 / Preferred $29.99 / Premium $299.99) waives
+fees on **simple spot trades only** (Basic up to $500/mo, Preferred up
+to $10k/mo). Its 25% fee rebate on Preferred/Premium applies to
+**Advanced spot** fees only. None of the tiers reduce perpetual-futures
+or other derivatives fees. For the perp strategy, Coinbase One is
+irrelevant — the perp fee is set by the Advanced derivatives tier
+(0.60% retail / 0.03% promo), independent of membership. Do not
+purchase Coinbase One expecting it to improve perp-bot profitability.
+(Coinbase One Basic/Preferred *would* zero out spot fees for the
+non-shorting `long_flat` spot variant, subject to the monthly volume
+cap.) Confirm current terms on the user's account — these programs
+change.
+
 ---
 
 ## 4. Crypto.com CDNA — detail
