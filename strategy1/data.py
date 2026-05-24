@@ -30,6 +30,29 @@ USER_AGENT = "AlasStrategy1/0.1"
 DAY_SECONDS = 86_400
 MAX_CANDLES_PER_REQUEST = 300
 
+# Granularities the Coinbase Exchange candles endpoint serves NATIVELY.
+# These six are the only values the API accepts; any other value is
+# rejected. The 30m / 2h / 4h / 1w intervals shown in the Coinbase
+# trading UI are aggregated client-side — derive them with
+# resample_ohlcv() from a native base (see RESAMPLE_RULES).
+NATIVE_GRANULARITIES = {
+    "1m": 60,
+    "5m": 300,
+    "15m": 900,
+    "1h": 3600,
+    "6h": 21600,
+    "1d": 86400,
+}
+
+# Non-native intervals from the UI: (pandas resample rule, recommended
+# native base to aggregate from). Built by resample_ohlcv(), not fetched.
+RESAMPLE_RULES = {
+    "30m": ("30min", "15m"),
+    "2h":  ("2h",    "1h"),
+    "4h":  ("4h",    "1h"),
+    "1w":  ("1W",    "1d"),
+}
+
 # Candidate universe for Strategy 1 RS ranking.
 # Selection criterion: liquid USD spot pairs on Coinbase that have
 # existed long enough to provide a backtest sample. This is the *pool*
@@ -78,25 +101,38 @@ def _safe_get(url: str, params: dict, max_retries: int = 5) -> requests.Response
     return last
 
 
-def fetch_daily_candles(product_id: str, days_back: int) -> pd.DataFrame:
-    """Pull `days_back` days of daily OHLCV for a Coinbase product.
+def fetch_candles(product_id: str, granularity_seconds: int, days_back: int) -> pd.DataFrame:
+    """Pull `days_back` days of OHLCV at a NATIVE granularity for a product.
 
-    Returns a DataFrame indexed by UTC date (DatetimeIndex, tz-aware)
-    with columns open/high/low/close/volume/dollar_volume. May return
-    fewer rows than requested if the product was listed more recently.
-    Returns an empty DataFrame if the product is unknown to Coinbase.
+    `granularity_seconds` must be one of NATIVE_GRANULARITIES' values
+    (60/300/900/3600/21600/86400); other values are rejected by the API.
+    For 30m/2h/4h/1w, fetch a native base and call resample_ohlcv().
+
+    Returns a tz-aware UTC DatetimeIndex frame with columns
+    open/high/low/close/volume/dollar_volume. The still-forming current
+    bar is dropped. Returns an empty frame if the product is unknown.
+
+    Note: for sub-hourly granularities over long windows this makes many
+    paginated requests (300 candles each). Keep `days_back` small for
+    1m/5m/15m pulls.
     """
+    if granularity_seconds not in NATIVE_GRANULARITIES.values():
+        raise ValueError(
+            f"granularity {granularity_seconds}s is not natively served by Coinbase; "
+            f"valid: {sorted(NATIVE_GRANULARITIES.values())}. "
+            f"For 30m/2h/4h/1w fetch a native base and use resample_ohlcv()."
+        )
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days_back)
     rows: list[list] = []
     cursor = end
 
     while cursor > start:
-        chunk_start = max(start, cursor - timedelta(seconds=DAY_SECONDS * MAX_CANDLES_PER_REQUEST))
+        chunk_start = max(start, cursor - timedelta(seconds=granularity_seconds * MAX_CANDLES_PER_REQUEST))
         params = {
             "start": chunk_start.isoformat(),
             "end": cursor.isoformat(),
-            "granularity": DAY_SECONDS,
+            "granularity": granularity_seconds,
         }
         url = f"{COINBASE_BASE}/products/{product_id}/candles"
         try:
@@ -123,11 +159,33 @@ def fetch_daily_candles(product_id: str, days_back: int) -> pd.DataFrame:
     df = df[["open", "high", "low", "close", "volume"]].astype(float)
     df["dollar_volume"] = df["close"] * df["volume"]
 
-    # Drop the still-forming current day so we never feed a partial bar
-    # downstream. A daily bar is "closed" once today's UTC date has passed.
-    today_utc = pd.Timestamp.now(tz="UTC").normalize()
-    df = df[df.index < today_utc]
-    return df
+    # Drop the still-forming current bar: a bar is closed once
+    # (bar_start + granularity) <= now.
+    now = pd.Timestamp.now(tz="UTC")
+    closed = df.index + pd.Timedelta(seconds=granularity_seconds) <= now
+    return df[closed]
+
+
+def fetch_daily_candles(product_id: str, days_back: int) -> pd.DataFrame:
+    """Backward-compatible daily wrapper around fetch_candles()."""
+    return fetch_candles(product_id, DAY_SECONDS, days_back)
+
+
+def resample_ohlcv(df: pd.DataFrame, rule: str) -> pd.DataFrame:
+    """Aggregate native OHLCV bars to a coarser interval (e.g. '4h', '1W').
+
+    Used to build the UI-only intervals (30m/2h/4h/1w) that the Coinbase
+    API does not serve directly. `rule` is a pandas offset alias; pass
+    bars finer than the target (see RESAMPLE_RULES for the recommended
+    native base per target).
+    """
+    agg = {
+        "open": "first", "high": "max", "low": "min",
+        "close": "last", "volume": "sum",
+    }
+    out = df.resample(rule, label="left", closed="left").agg(agg).dropna(subset=["open"])
+    out["dollar_volume"] = out["close"] * out["volume"]
+    return out
 
 
 def save_candles(df: pd.DataFrame, product_id: str, out_dir: Path) -> Path:

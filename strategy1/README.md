@@ -25,6 +25,8 @@ long/short BTC trend strategy. Spec:
 | Regime classifier (`regime.py`) | ✅ | both |
 | Directional signal (`regime.directional_signal`) | ✅ | Strategy 2 |
 | BTC backtester (`btc_backtest.py`) | ✅ | Strategy 2 |
+| Indicator library (`indicators.py`) | ✅ | available, not yet wired to a strategy |
+| Multi-timeframe data (`data.fetch_candles` + `resample_ohlcv`) | ✅ | available |
 
 > **Execution reality:** the user's Crypto.com App account is spot-only
 > and cannot short. Only the `long_flat` variant is executable today.
@@ -40,6 +42,38 @@ report passes and the backtest produces a verdict.
 ```bash
 pip install -r ../requirements.txt
 ```
+
+## Timeframes and indicators (Coinbase parity)
+
+The Coinbase UI shows intervals 1m / 5m / 15m / 30m / 1h / 2h / 4h /
+6h / 1d / 1w and the indicators RSI, MA, EMA, MACD, Bollinger Bands.
+This package now mirrors that:
+
+- **Native API intervals** (served directly): 1m, 5m, 15m, 1h, 6h, 1d
+  — see `data.NATIVE_GRANULARITIES`, fetched by `data.fetch_candles`.
+- **UI-only intervals** (30m, 2h, 4h, 1w): the Coinbase data API does
+  NOT serve these; the chart aggregates them. Build them with
+  `data.resample_ohlcv(base_df, rule)` from a native base — see
+  `data.RESAMPLE_RULES`.
+- **Indicators**: `strategy1/indicators.py` — `sma`, `ema`, `rsi`,
+  `macd`, `bollinger`, all pure no-look-ahead functions.
+
+```bash
+python -m strategy1.indicators --in data_cache/   # print latest indicator values for BTC-USD
+```
+
+> **Discipline note (your own founding rule).** Having these indicators
+> and timeframes available is infrastructure, not edge. The project
+> chose to avoid "random indicator combinations." Don't bolt RSI + MACD
+> + Bollinger onto entries and tune until the curve looks good — that is
+> the curve-fitting trap. Test ONE indicator as a falsifiable hypothesis
+> through the gates before keeping it.
+>
+> **Fees + timeframe.** Shorter timeframes mean more trades, and at the
+> 0.60% retail perp fee, frequency kills profitability (see the
+> btc_backtest fee section). A daily-bar strategy that trades ~weekly is
+> far more fee-survivable than a 15m strategy. Pick the slowest
+> timeframe that still expresses the edge.
 
 ## Usage
 
