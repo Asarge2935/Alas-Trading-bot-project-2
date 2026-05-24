@@ -46,11 +46,23 @@ required. The user named two to evaluate: Coinbase and Crypto.com.
 ## 3. Coinbase — detail
 
 **Product.** "US Perpetual-Style Futures," CFTC-regulated via
-Coinbase Financial Markets, launched 2025-07-21. No monthly expiry
-(perpetual-style with a funding mechanism). Nano BTC-PERP is **1/100
-of a BTC** per contract, with a **10 USDC minimum order notional** —
-this is the single most important fact for a $500 account: position
-sizing down to ~$10 is feasible, so risk-per-trade can be kept tiny.
+Coinbase Financial Markets. BTC and ETH nano perps launched
+2025-07-21; **SOL and XRP nano perps launched 2025-08-18.** So all of
+the user's chosen universe (BTC, ETH, SOL) is long/short-capable here.
+No monthly expiry (perpetual-style with a funding mechanism).
+
+**Contract sizes & the small-account caveat.** Nano contracts are
+sized at: nano BTC = 1/100 BTC (~$800 notional at $80k), nano SOL =
+5 SOL (~$750 at $150), nano ETH = a fraction of 1 ETH. There is a
+documented 10 USDC minimum *order* notional, but the *contract unit*
+is what actually constrains a tiny account: one nano contract of any
+of these is ~$700–800 notional. A $500 account **split three ways**
+(~$167/sleeve) cannot hold even one contract per asset at 1x leverage.
+Implications: either (a) use modest leverage (≤2–3x, still within the
+no-high-leverage rule) to hold one contract per sleeve, (b) don't run
+all three simultaneously at full size, or (c) concentrate. This is a
+live-sizing problem, not a backtest problem — the backtester works in
+return fractions — but it must be solved before live.
 
 **Leverage.** Up to **10x**. This is *lower* than offshore venues
 (50–100x), which is a feature, not a bug — it aligns with the

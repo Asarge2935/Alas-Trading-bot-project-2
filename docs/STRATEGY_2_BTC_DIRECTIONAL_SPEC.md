@@ -1,10 +1,20 @@
-# Strategy 2 — BTC Directional (Long / Short / Flat)
+# Strategy 2 — Directional (Long / Short / Flat) on BTC / ETH / SOL
 
 **Status:** specification. Backtester implemented; no live execution.
-**Supersedes as current focus:** the user has redirected the project
-to trade **Bitcoin only**, taking both long and short positions.
-Strategy 1 (RS rotation) is paused, not deleted — its data layer and
-regime logic are reused here.
+**Current focus:** the user narrowed the universe to **BTC, ETH, and
+SOL**, running the **same directional long/short strategy independently
+on each** (not a rotation, not a BTC-gated basket). Strategy 1 (broad
+RS rotation) is paused, not deleted — its data layer and regime logic
+are reused here.
+
+> **2026-05-24 update — three assets, independent.** Originally specced
+> BTC-only; extended to BTC/ETH/SOL after the user's change of heart.
+> Each asset is long/short/flat on its OWN trend signal. Single-asset
+> runs use `strategy1.btc_backtest`; the three-asset version + an
+> equal-weight portfolio use `strategy1.multi_backtest`. All three
+> have Coinbase US nano perps (BTC 1/100 BTC, SOL 5 SOL/contract, ETH
+> nano), so all are long/short-capable on the perp venue — subject to
+> the small-account sizing caveat in `VENUE_AUDIT_PERP_US.md`.
 
 ---
 

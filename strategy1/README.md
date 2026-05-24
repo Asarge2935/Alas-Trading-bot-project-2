@@ -24,7 +24,8 @@ long/short BTC trend strategy. Spec:
 | Universe + RS ranker (`universe.py`) | ✅ | Strategy 1 only |
 | Regime classifier (`regime.py`) | ✅ | both |
 | Directional signal (`regime.directional_signal`) | ✅ | Strategy 2 |
-| BTC backtester (`btc_backtest.py`) | ✅ | Strategy 2 |
+| BTC backtester (`btc_backtest.py`) | ✅ | Strategy 2 (single asset) |
+| Multi-asset backtester (`multi_backtest.py`) | ✅ | Strategy 2 (BTC/ETH/SOL) |
 | Indicator library (`indicators.py`) | ✅ | available, not yet wired to a strategy |
 | Multi-timeframe data (`data.fetch_candles` + `resample_ohlcv`) | ✅ | available |
 
@@ -179,6 +180,24 @@ python -m strategy1.btc_backtest --in data_cache/ --vol-aware            # Defin
 
 Fee sensitivity on the same synthetic 79-trade strategy:
 **perp 0.10% → −12.9%  ·  (old wrong) 0.60% → −60.6%  ·  spot 1.20% → −84.9%.**
+
+### 6. Multi-asset directional backtest (BTC / ETH / SOL)
+
+The current universe is BTC, ETH, SOL, each running the same long/short
+trend strategy independently. This reuses the single-asset engine and
+adds an equal-weight portfolio view.
+
+```bash
+python3 -m strategy1.multi_backtest --in data_cache/                 # BTC/ETH/SOL, perp fees
+python3 -m strategy1.multi_backtest --in data_cache/ --vol-aware     # Definition B-dir
+```
+
+Reports each asset's three variants (long_flat / short_flat /
+long_short) with gate verdicts, then an equal-weight portfolio of the
+three sleeves vs an equal-weight buy-and-hold benchmark. `long_flat`
+is spot-executable on all three; the short variants need Coinbase
+perps (all three have nano perps; mind the small-account sizing caveat
+in `docs/VENUE_AUDIT_PERP_US.md`).
 
 Read the verdicts honestly. Two likely failure modes: (1) fees eat the
 edge (compare retail vs promo); (2) the short side's edge is
