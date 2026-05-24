@@ -414,7 +414,17 @@ def evaluate_breakout(row, side, btc_row):
 # Main backtest loop
 # ---------------------------------------------------------------------------
 
-def run_backtest(data_by_symbol):
+def run_backtest(data_by_symbol, trade_assets=None, long_only=False):
+    """Simulate the strategy.
+
+    Diagnostic isolation (does NOT change the deployed rules): regime and
+    relative strength are always computed over the full BTC/ETH/SOL set, so the
+    RS pick is unchanged. `trade_assets` restricts which symbols may be ENTERED;
+    `long_only` suppresses short entries. With no arguments this is the full
+    canonical strategy.
+    """
+    tradable = set(trade_assets) if trade_assets else set(data_by_symbol.keys())
+
     common_times = None
     for sym, df in data_by_symbol.items():
         times = set(df["time"])
@@ -522,6 +532,10 @@ def run_backtest(data_by_symbol):
             if current_time.normalize() in rs_by_day.index else None
         sym, side = select_candidate(regime_state, rs_row)
         if sym is None or sym not in indexed:
+            continue
+        if long_only and side == "short":   # diagnostic isolation only
+            continue
+        if sym not in tradable:              # diagnostic isolation only
             continue
         if sym in open_trades or trades_today.get(sym, 0) >= MAX_TRADES_PER_ASSET_PER_DAY:
             continue
@@ -908,14 +922,31 @@ def main(argv=None):
     p.add_argument("--days", type=int, default=DAYS_BACK,
                    help=f"Days of 6H history to fetch (default {DAYS_BACK}; "
                         f"~1460 ≈ 4 years for a real sample)")
+    p.add_argument("--trade-assets", nargs="*", default=None, metavar="SYM",
+                   help="DIAGNOSTIC: restrict which symbols may be entered "
+                        "(e.g. --trade-assets ETH-USD). Regime/RS still use all "
+                        "of BTC/ETH/SOL. Default: all.")
+    p.add_argument("--long-only", action="store_true",
+                   help="DIAGNOSTIC: suppress short entries (risk-off -> no trade).")
     args = p.parse_args(argv)
     days_back = args.days
+
+    trade_assets = args.trade_assets
+    if trade_assets:
+        bad = [s for s in trade_assets if s not in ASSETS]
+        if bad:
+            print(f"ERROR: --trade-assets {bad} not in universe {ASSETS}")
+            return
+    is_diagnostic = bool(trade_assets) or args.long_only
 
     print(f"Backtest config: {days_back} days, 6H bars, assets: {', '.join(ASSETS)}")
     print(f"Regime: BTC 1D EMA{REGIME_EMA_SLOW} (3-state)  |  RS: {RS_LOOKBACK_DAYS}d return")
     print(f"Entry: {BREAKOUT_LOOKBACK}-bar breakout + strong close + BTC confirm")
     print(f"Risk: {RISK_PCT*100:.0f}%/trade, daily-loss {MAX_DAILY_LOSS_PCT}%, "
           f"weekly-loss {MAX_WEEKLY_LOSS_PCT}%, max {MAX_OPEN_POSITIONS} open")
+    if is_diagnostic:
+        print(f"** DIAGNOSTIC ISOLATION (not the deployed strategy): "
+              f"trade_assets={trade_assets or 'all'}, long_only={args.long_only} **")
     print()
 
     data = {}
@@ -938,7 +969,8 @@ def main(argv=None):
         return
 
     print("\nRunning scanner backtest...")
-    trades, equity_curve = run_backtest(data)
+    trades, equity_curve = run_backtest(data, trade_assets=trade_assets,
+                                        long_only=args.long_only)
     print(f"Backtest complete. {len(trades)} trades simulated.")
 
     export_trades_csv(trades, TRADES_CSV)
