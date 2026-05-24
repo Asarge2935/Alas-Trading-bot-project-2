@@ -64,6 +64,28 @@ all three simultaneously at full size, or (c) concentrate. This is a
 live-sizing problem, not a backtest problem — the backtester works in
 return fractions — but it must be solved before live.
 
+**Confirmed from the user's live trade screen (2026-05-24):**
+- nano Bitcoin contract size **0.01 BTC**, notional **~$764** at
+  $76,455, fee **~$0.91 = 0.12%** (consistent with the 0.10% taker +
+  rounding) — validates the backtester's `perp_taker` 0.10% default.
+- One contract requires **~$179 margin at 4.3x leverage** (auto-set).
+- The user's **available balance was $100**, and the order was blocked
+  with *"Insufficient funds."* So the account currently cannot open
+  even one nano BTC contract. Three independent sleeves (BTC/ETH/SOL)
+  would need ~$540 margin total — more than the $500 account. **Live
+  trading the three-asset strategy is not fundable at the current
+  balance.** Either add funds, run fewer assets, or accept higher
+  leverage (not recommended).
+- **Product ambiguity — dated vs perpetual.** The screen showed
+  "BTC 29 MAY 26 / nano Bitcoin **Futures**" — a *dated monthly* nano
+  future (expires, must be rolled), NOT the perpetual-style BTC-PERP.
+  These have different cost structures: dated futures incur a **roll
+  cost** each expiry + basis; perpetuals pay **funding**. The
+  backtester models a perpetual (daily funding drag). If the user
+  trades the dated nano future instead, reinterpret `funding_daily` as
+  an amortized roll/basis drag, or switch to BTC-PERP. **Decide which
+  instrument before trusting the cost model.**
+
 **Leverage.** Up to **10x**. This is *lower* than offshore venues
 (50–100x), which is a feature, not a bug — it aligns with the
 project's "no high leverage" risk rule and makes catastrophic
