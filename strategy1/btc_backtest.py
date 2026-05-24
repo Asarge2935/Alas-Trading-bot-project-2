@@ -39,12 +39,39 @@ from strategy1.universe import load_all
 
 
 # --- cost / risk parameters (placeholders; see spec §4-§5) ----------------
-COST_PER_SIDE = 0.0025          # 0.20% taker + 0.05% slippage
-SHORT_FUNDING_DAILY = 0.0003    # 0.03%/day borrow/funding drag on shorts
+# --- cost / risk parameters -----------------------------------------------
+# Coinbase US Perpetual-Style Futures fees are tiered by 30-day volume.
+# A starting ~$500 account sits in the lowest tier. Verified figures
+# (2026, public fee schedule — confirm against the user's actual tier):
+#   retail (<$10k/mo): 0.60% taker / 0.40% maker
+#   promo (temporary):  0.03% taker / 0.00% maker
+#   high-vol (>$400M):  0.05% taker / 0.00% maker
+# We model TAKER fills (a trend bot crossing the spread is a taker) and
+# add a slippage allowance on top. These are intentionally pessimistic
+# defaults; override per the user's confirmed tier.
+FEE_PRESETS = {
+    "retail": 0.0060,   # 0.60% taker — the realistic starting case
+    "promo":  0.0003,   # 0.03% taker — only if the promo is live
+    "hivol":  0.0005,   # 0.05% taker — high-volume tier, not reachable soon
+}
+DEFAULT_SLIPPAGE = 0.0005       # 0.05% per side
+DEFAULT_FUNDING_DAILY = 0.0003  # 0.03%/day — PLACEHOLDER, needs real series
 ATR_WINDOW = 14
 ATR_STOP_MULT = 2.0
 MAX_DRAWDOWN = 0.25             # MTM equity halt threshold
 OOS_SPLIT = "2025-01-01"        # in-sample before, out-of-sample on/after
+
+
+@dataclass
+class CostModel:
+    taker_fee: float = FEE_PRESETS["retail"]
+    slippage: float = DEFAULT_SLIPPAGE
+    funding_daily: float = DEFAULT_FUNDING_DAILY
+
+    @property
+    def per_side(self) -> float:
+        return self.taker_fee + self.slippage
+
 
 MODE_MAP = {
     "long_flat":  {"long": 1, "short": 0, "flat": 0},
@@ -87,8 +114,12 @@ def _atr(df: pd.DataFrame, window: int = ATR_WINDOW) -> pd.Series:
     return tr.rolling(window=window, min_periods=window).mean()
 
 
-def run_variant(df: pd.DataFrame, signal: pd.Series, mode: str) -> VariantResult:
+def run_variant(df: pd.DataFrame, signal: pd.Series, mode: str,
+                costs: CostModel | None = None) -> VariantResult:
     """Walk the bars and produce a MTM equity curve plus trade list."""
+    costs = costs or CostModel()
+    cost_per_side = costs.per_side
+    funding_daily = costs.funding_daily
     pos_map = MODE_MAP[mode]
     target = signal.map(pos_map).shift(1).fillna(0).astype(int)  # act next bar
     atr = _atr(df)
@@ -118,7 +149,7 @@ def run_variant(df: pd.DataFrame, signal: pd.Series, mode: str) -> VariantResult
             r = close / closes[t - 1] - 1.0
             pnl = pos * r
             if pos == -1:
-                pnl -= SHORT_FUNDING_DAILY
+                pnl -= funding_daily
             equity *= (1.0 + pnl)
 
         desired = target_arr[t]
@@ -138,7 +169,7 @@ def run_variant(df: pd.DataFrame, signal: pd.Series, mode: str) -> VariantResult
         # 3. Rebalance to desired position, charging cost per leg traded.
         if desired != pos:
             legs = abs(desired - pos)
-            equity *= (1.0 - COST_PER_SIDE * legs)
+            equity *= (1.0 - cost_per_side * legs)
             if pos != 0:
                 trades.append(Trade(
                     entry_date=entry_date, exit_date=dates[t], side=pos,
@@ -289,7 +320,9 @@ def gate_report(m: VariantMetrics, hodl_sharpe: float) -> list[tuple[str, bool, 
     return gates
 
 
-def format_report(results: dict[str, VariantResult], df: pd.DataFrame) -> str:
+def format_report(results: dict[str, VariantResult], df: pd.DataFrame,
+                  costs: CostModel | None = None) -> str:
+    costs = costs or CostModel()
     hodl = buy_and_hold(df)
     hodl_sharpe = _sharpe(hodl)
     hodl_ret = float(hodl.iloc[-1] - 1.0)
@@ -299,6 +332,8 @@ def format_report(results: dict[str, VariantResult], df: pd.DataFrame) -> str:
     lines.append("=" * 72)
     lines.append("BTC Directional Backtest — Strategy 2")
     lines.append(f"Period: {df.index.min().date()} → {df.index.max().date()}  ({len(df)} bars)")
+    lines.append(f"Costs: taker={costs.taker_fee*100:.2f}% + slippage={costs.slippage*100:.2f}% "
+                 f"= {costs.per_side*100:.2f}%/side  |  short funding={costs.funding_daily*100:.2f}%/day")
     lines.append("=" * 72)
     lines.append(f"Benchmark buy-and-hold BTC: total_return={hodl_ret*100:+.1f}%  "
                  f"Sharpe={hodl_sharpe:.2f}  maxDD={hodl_dd*100:.1f}%")
@@ -339,6 +374,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--product", default="BTC-USD")
     p.add_argument("--vol-aware", action="store_true",
                    help="Use Definition B-dir (vol stand-down on longs)")
+    p.add_argument("--fee-preset", choices=sorted(FEE_PRESETS), default="retail",
+                   help="Coinbase taker-fee tier: retail (0.60%, default), "
+                        "promo (0.03%), hivol (0.05%)")
+    p.add_argument("--taker-fee", type=float, default=None,
+                   help="Override taker fee as a fraction (e.g. 0.006 for 0.60%)")
+    p.add_argument("--slippage", type=float, default=DEFAULT_SLIPPAGE)
+    p.add_argument("--funding-daily", type=float, default=DEFAULT_FUNDING_DAILY,
+                   help="Daily short funding drag (PLACEHOLDER until real series wired)")
     args = p.parse_args(argv)
 
     all_data = load_all(args.in_dir)
@@ -346,15 +389,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {args.product} not in {args.in_dir}", file=sys.stderr)
         return 2
 
+    taker = args.taker_fee if args.taker_fee is not None else FEE_PRESETS[args.fee_preset]
+    costs = CostModel(taker_fee=taker, slippage=args.slippage,
+                      funding_daily=args.funding_daily)
+
     df = all_data[args.product].sort_index()
     signal = directional_signal(df["close"], vol_aware=args.vol_aware)
 
-    results = {mode: run_variant(df, signal, mode) for mode in MODE_MAP}
-    print(format_report(results, df))
-    if args.vol_aware:
-        print("\n(signal: Definition B-dir, vol-aware)")
-    else:
-        print("\n(signal: Definition A-dir, trend-only; pass --vol-aware for B-dir)")
+    results = {mode: run_variant(df, signal, mode, costs) for mode in MODE_MAP}
+    print(format_report(results, df, costs))
+    sig_note = "B-dir, vol-aware" if args.vol_aware else "A-dir, trend-only"
+    fee_note = (f"--taker-fee {taker}" if args.taker_fee is not None
+                else f"--fee-preset {args.fee_preset}")
+    print(f"\n(signal: Definition {sig_note}  |  fees: {fee_note})")
+    print("Tip: compare --fee-preset retail vs promo to see fee sensitivity.")
     return 0
 
 

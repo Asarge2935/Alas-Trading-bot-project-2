@@ -134,13 +134,26 @@ python -m strategy1.btc_backtest --in data_cache/ --vol-aware # Definition B-dir
 
 Runs three variants (`long_flat`, `short_flat`, `long_short`) plus a
 buy-and-hold benchmark, and scores each against the spec §7 gates.
-Prints a verdict per variant. Reminder printed at the end: only
-`long_flat` is executable on the current spot account.
 
-Read the verdicts honestly. The expected modal outcome is that the
-short side's edge is concentrated in the 2022 downtrend (gate 6/7),
-which would mean it is regime-dependent and **not** a reason to open
-a perp venue.
+**Fees dominate this strategy. Always run `--fee-preset retail`
+first** — that is the realistic Coinbase taker fee (0.60%) for a
+starting ~$500 account. `promo` (0.03%) is the optimistic bound only
+if the promotional rate is live for you. The gap is enormous: in a
+synthetic 79-trade test, the same strategy returned **−60.6% at retail
+fees vs −2.7% at promo fees.** A high-turnover flip strategy is very
+likely uneconomic on retail fees — that is a real, expected finding,
+not a bug.
+
+```bash
+python -m strategy1.btc_backtest --in data_cache/                       # retail fees (default)
+python -m strategy1.btc_backtest --in data_cache/ --fee-preset promo    # optimistic bound
+python -m strategy1.btc_backtest --in data_cache/ --vol-aware           # Definition B-dir
+```
+
+Read the verdicts honestly. Two likely failure modes: (1) fees eat the
+edge (compare retail vs promo); (2) the short side's edge is
+concentrated in the 2022 downtrend (gate 6/7), i.e. regime-dependent.
+Either is a reason to *not* rush into a perp venue with real money.
 
 ### 4. BTC regime classification
 

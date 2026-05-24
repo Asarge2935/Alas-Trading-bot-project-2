@@ -37,7 +37,7 @@ required. The user named two to evaluate: Coinbase and Crypto.com.
 | Margin | USDC-margined; isolated margin to verify | Retail restricted to **isolated margin** (good) — but on which product/region unclear |
 | API | **Advanced Trade API** (REST + WS), perpetual-futures endpoints documented at docs.cdp.coinbase.com | International Exchange v1 API exists but is **not US-accessible**; CDNA API parity with it is **unverified** |
 | Sandbox | Advanced Trade sandbox exists | Unknown / institutional-invite only (per earlier audit) |
-| Fees | Taker from **0.02%** | Unknown for CDNA US |
+| Fees | Retail **0.60% taker / 0.40% maker** (<$10k/mo); promo 0.03% taker if live; 0.05% only at >$400M/mo | Unknown for CDNA US |
 | Fit for ~$500 account | **Excellent** — 1/100 BTC nano + 10 USDC min order | Unknown |
 | Prior project experience | Coinbase data path already used in this repo | None |
 
@@ -68,12 +68,31 @@ availability must be confirmed** — some states (historically NY, and
 a handful of others for derivatives) can differ. **Ohio is not on any
 known exclusion list, but this must be verified at signup.**
 
-**Costs vs our backtest.** The backtester currently assumes 0.20%
-taker + 0.05% slippage and 0.03%/day short funding. Coinbase taker is
-**~0.02%** — an order of magnitude lower — and funding is a real,
-observable series, not a flat guess. **Both must be replaced with
-Coinbase's actual numbers before any verdict is trusted.** Lower fees
-will help; real funding could help or hurt.
+**Costs vs our backtest — IMPORTANT CORRECTION.** An earlier draft of
+this audit cited a ~0.02% taker fee. That was wrong: 0.02–0.05% are
+high-volume / promotional rates. The **realistic retail taker fee for
+a starting ~$500 account is 0.60%** (0.40% maker), per Coinbase's
+tiered Advanced fee schedule. There is a temporary promo (0.03% taker
+/ 0.00% maker) that may or may not be live for the user.
+
+This is the single most important economic fact in this audit. The
+backtester's old 0.20% placeholder was **too low**, not too high.
+At 0.60%/side, a strategy that flips long↔short frequently is
+devastated by fees:
+
+> Synthetic check, same 79-trade strategy:
+> **retail (0.60%): −60.6% total return** vs **promo (0.03%): −2.7%.**
+
+The takeaway: on retail Coinbase fees, a high-turnover BTC flip
+strategy is almost certainly uneconomic. Viability depends on either
+(a) qualifying for the promo/low-fee tier, (b) drastically reducing
+trade frequency, or (c) the per-trade edge being large enough to clear
+~1.2% round-trip costs. The backtester now models this with a
+`--fee-preset {retail,promo,hivol}` switch; **run `retail` first** and
+treat `promo` as the optimistic bound.
+
+Funding remains a flat 0.03%/day placeholder and still needs a real
+BTC-PERP series.
 
 ---
 
@@ -135,11 +154,13 @@ transfer/withdrawal disabled, IP-allowlisted**. Generate a read-only
 key first for an authenticated probe (balances, positions, fee tier).
 
 ### Blocker C — Real cost + funding data
-Replace the backtester's placeholder costs (0.20% taker, 0.03%/day
-funding) with Coinbase's actual taker fee for the user's tier and a
-real historical funding series for BTC-PERP. **Until this is done, no
-Strategy 2 verdict is trustworthy** — the current backtest overstates
-fees ~10x and guesses at funding.
+The backtester now defaults to **0.60% retail taker** (the realistic
+starting tier) and exposes `--fee-preset`. Still to confirm against
+the user's actual Coinbase account: their real fee tier (and whether
+the promo is active for them), and a real historical BTC-PERP funding
+series to replace the 0.03%/day placeholder. **Until the funding
+series is real and the fee tier is confirmed, no Strategy 2 verdict is
+final** — but the retail-fee run is now a fair pessimistic baseline.
 
 ---
 
