@@ -122,6 +122,7 @@ OUTPUT_DIR = "./backtest_output"
 TRADES_CSV = os.path.join(OUTPUT_DIR, "trades.csv")
 EQUITY_CSV = os.path.join(OUTPUT_DIR, "equity_curve.csv")
 LOSS_AUTOPSY_CSV = os.path.join(OUTPUT_DIR, "loss_autopsy.csv")
+REGIME_BEHAVIOR_CSV = os.path.join(OUTPUT_DIR, "regime_behavior_report.csv")
 
 
 # ---------------------------------------------------------------------------
@@ -914,8 +915,19 @@ def _classify_loss(trade, mfe_r, mae_r):
 
     if reason == "time_stop" or (mfe_r < AUTOPSY_CHOP_MFE_R and mae_r < AUTOPSY_CHOP_MAE_R):
         labels.append("regime_chop_loss")
-    if mfe_r < AUTOPSY_CHOP_MFE_R and mae_r >= AUTOPSY_CHOP_MAE_R and bars <= 3:
+    # Genuine BTC-regime conflict, judged by the SAME regime the entry used:
+    # trade.regime_state is set from get_btc_regime() during the sim. Entries
+    # are regime-aligned by construction (long<-risk_on, short<-risk_off), so
+    # this should be ~empty; any hit signals a real entry/regime inconsistency.
+    regime_aligned = ((trade.side == "long" and trade.regime_state == "risk_on")
+                      or (trade.side == "short" and trade.regime_state == "risk_off"))
+    if not regime_aligned:
         labels.append("regime_against_trade")
+    # Fast adverse move (PREVIOUSLY MISLABELED 'regime_against_trade'): price
+    # ran >= 1R against the trade within 3 bars with little favorable move.
+    # This is price action, not a regime signal.
+    if mfe_r < AUTOPSY_CHOP_MFE_R and mae_r >= AUTOPSY_CHOP_MAE_R and bars <= 3:
+        labels.append("fast_adverse_loss")
     if bars <= AUTOPSY_INSTANT_BARS and mfe_r < AUTOPSY_CHOP_MFE_R:
         labels.append("instant_failure")
     if bars >= AUTOPSY_SLOW_BLEED_BARS and mfe_r < AUTOPSY_ALMOST_TARGET_R and net < 0:
@@ -1065,6 +1077,142 @@ def print_loss_autopsy_summary(rows):
     for thresh in (0.5, 1.0, 1.5):
         hit = sum(1 for r in rows if r["MFE_R"] >= thresh)
         print(f"    reached +{thresh:>3}R MFE: {hit}/{n} ({hit / n * 100:.0f}%)")
+
+
+# ---------------------------------------------------------------------------
+# Regime behavior report — ANALYSIS ONLY. Buckets completed trades along
+# regime / structure / timing dimensions. Changes no entries, exits, sizing,
+# costs, or gates.
+# ---------------------------------------------------------------------------
+
+RBR_LOW_SAMPLE = 10           # < this many trades -> LOW_SAMPLE
+RBR_DEPLOYABLE = 30           # < this many -> NOT_DEPLOYABLE on its own (spec gate)
+RBR_SLOPE_BARS = 10           # 6H bars used to gauge an asset's EMA50 slope
+RBR_VOL_LOW = 0.75            # ATR14/ATR120 below this -> low-vol regime
+RBR_VOL_HIGH = 1.25           # above this -> high-vol regime
+
+
+def _bucket_metrics(trades):
+    """trades, wins, losses, win_rate, PF, avg R, net P&L, trade-sequence maxDD."""
+    n = len(trades)
+    wins = [t for t in trades if t.net_pnl_usd > 0]
+    losses = [t for t in trades if t.net_pnl_usd <= 0]
+    gross_win = sum(t.net_pnl_usd for t in wins)
+    gross_loss = abs(sum(t.net_pnl_usd for t in losses))
+    pf = (gross_win / gross_loss) if gross_loss > 0 else (float("inf") if gross_win > 0 else 0.0)
+    avg_r = float(np.mean([t.r_multiple for t in trades])) if n else 0.0
+    net = sum(t.net_pnl_usd for t in trades)
+    # Trade-sequence drawdown: peak-to-trough of cumulative net P&L (by exit time).
+    cum = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    for t in sorted(trades, key=lambda x: (x.exit_time or x.entry_time)):
+        cum += t.net_pnl_usd
+        peak = max(peak, cum)
+        max_dd = max(max_dd, peak - cum)
+    flag = "LOW_SAMPLE" if n < RBR_LOW_SAMPLE else ("NOT_DEPLOYABLE(<30)" if n < RBR_DEPLOYABLE else "")
+    return {
+        "trades": n, "wins": len(wins), "losses": len(losses),
+        "win_rate_pct": round(len(wins) / n * 100, 1) if n else 0.0,
+        "profit_factor": ("inf" if pf == float("inf") else round(pf, 2)),
+        "avg_R": round(avg_r, 3), "net_pnl_usd": round(net, 2),
+        "max_drawdown_usd": round(max_dd, 2), "sample_flag": flag,
+    }
+
+
+def _trade_regime_features(trades, data_by_symbol):
+    """Per-trade bucket keys for every dimension (uses signal-bar context)."""
+    indexed = {sym: df.set_index("time") for sym, df in data_by_symbol.items()}
+    daily_close = {sym: _daily_close(indexed[sym]) for sym in indexed}
+    rs_by_day = compute_rs(daily_close)
+    dow_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    feats = {}
+    for t in trades:
+        sym_idx = indexed.get(t.symbol)
+        self_reg, vol_reg, ext_b, rs_rank = "unknown", "unknown", "unknown", "unknown"
+        if sym_idx is not None and t.signal_candle_time in sym_idx.index:
+            sig = sym_idx.loc[t.signal_candle_time]
+            # Asset self-regime (own EMA50 + slope).
+            pos = sym_idx.index.get_loc(t.signal_candle_time)
+            ema_now = sig["ema_50"]
+            ema_prev = sym_idx["ema_50"].iloc[pos - RBR_SLOPE_BARS] if pos >= RBR_SLOPE_BARS else float("nan")
+            if not (pd.isna(ema_now) or pd.isna(ema_prev)):
+                up = sig["close"] > ema_now and ema_now > ema_prev
+                down = sig["close"] < ema_now and ema_now < ema_prev
+                self_reg = "uptrend" if up else ("downtrend" if down else "neutral_chop")
+            # Volatility regime.
+            if not pd.isna(sig["atr_14"]) and not pd.isna(sig["atr_regime_avg"]) and sig["atr_regime_avg"] > 0:
+                ratio = sig["atr_14"] / sig["atr_regime_avg"]
+                vol_reg = "low" if ratio < RBR_VOL_LOW else ("high" if ratio > RBR_VOL_HIGH else "normal")
+            # Entry extension from EMA50 in ATR (trade direction).
+            if not pd.isna(ema_now) and t.atr_at_signal > 0:
+                ext = (t.entry_price - ema_now) if t.side == "long" else (ema_now - t.entry_price)
+                ext_atr = ext / t.atr_at_signal
+                ext_b = "<1_ATR" if ext_atr < 1 else ("1-2_ATR" if ext_atr <= 2 else ">2_ATR")
+        day = t.signal_candle_time.normalize()
+        if day in rs_by_day.index:
+            r = rs_by_day.loc[day].dropna()
+            if t.symbol in r.index:
+                rs_rank = f"rank_{int(r.rank(ascending=False)[t.symbol])}"
+        hour = t.entry_time.hour
+        tb = f"{(hour // 4) * 4:02d}:00-{((hour // 4) * 4 + 4) % 24:02d}:00_UTC"
+        feats[id(t)] = {
+            "symbol": t.symbol, "side": t.side, "btc_regime": t.regime_state,
+            "asset_self_regime": self_reg, "rs_rank": rs_rank,
+            "vol_regime": vol_reg, "entry_extension": ext_b,
+            "time_bucket": tb, "day_of_week": dow_names[t.entry_time.dayofweek],
+        }
+    return feats
+
+
+def build_regime_behavior_report(trades, data_by_symbol):
+    """Rows of (dimension, bucket, metrics...) across all 9 dimensions."""
+    if not trades:
+        return []
+    feats = _trade_regime_features(trades, data_by_symbol)
+    dimensions = ["symbol", "side", "btc_regime", "asset_self_regime", "rs_rank",
+                  "vol_regime", "entry_extension", "time_bucket", "day_of_week"]
+    rows = []
+    for dim in dimensions:
+        groups = {}
+        for t in trades:
+            groups.setdefault(feats[id(t)][dim], []).append(t)
+        for bucket in sorted(groups):
+            m = _bucket_metrics(groups[bucket])
+            rows.append({"dimension": dim, "bucket": bucket, **m})
+    return rows
+
+
+def export_regime_behavior_csv(rows, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fieldnames = ["dimension", "bucket", "trades", "wins", "losses", "win_rate_pct",
+                  "profit_factor", "avg_R", "net_pnl_usd", "max_drawdown_usd", "sample_flag"]
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for r in rows:
+            writer.writerow(r)
+    print(f"Exported regime behavior report ({len(rows)} buckets) to {path}")
+
+
+def print_regime_behavior_report(rows):
+    print("\n" + "=" * 90)
+    print("REGIME BEHAVIOR REPORT (diagnostic only — buckets <30 trades are not "
+          "deployable alone)")
+    print("=" * 90)
+    if not rows:
+        print("  No trades to bucket.")
+        return
+    last_dim = None
+    for r in rows:
+        if r["dimension"] != last_dim:
+            print(f"\n  -- by {r['dimension']} --")
+            print(f"    {'bucket':<16}{'n':>4}{'win%':>7}{'PF':>7}"
+                  f"{'avgR':>8}{'net$':>10}{'maxDD$':>9}  flag")
+            last_dim = r["dimension"]
+        print(f"    {str(r['bucket']):<16}{r['trades']:>4}{r['win_rate_pct']:>7}"
+              f"{str(r['profit_factor']):>7}{r['avg_R']:>8.3f}{r['net_pnl_usd']:>10.2f}"
+              f"{r['max_drawdown_usd']:>9.2f}  {r['sample_flag']}")
 
 
 def report_summary(trades, equity_curve):
@@ -1257,6 +1405,7 @@ def _regime_run_metrics(data_by_symbol, strict):
         "trades": len(trades), "pf": pf, "avg_r": avg_r, "net": net,
         "max_dd": max((p["drawdown_pct"] for p in eq), default=0.0),
         "rat": cat("regime_against_trade"), "chop": cat("regime_chop_loss"),
+        "fast": cat("fast_adverse_loss"),
     }
 
 
@@ -1280,6 +1429,7 @@ def compare_regime(data_by_symbol):
         ("Net P&L $", num(d["net"], pos=True), num(s["net"], pos=True)),
         ("Max DD %", num(d["max_dd"]), num(s["max_dd"])),
         ("regime_against_trade losses", str(d["rat"]), str(s["rat"])),
+        ("fast_adverse_loss losses", str(d["fast"]), str(s["fast"])),
         ("regime_chop_loss losses", str(d["chop"]), str(s["chop"])),
     ]
     print("\n" + "=" * 66)
@@ -1371,10 +1521,13 @@ def main(argv=None):
     export_equity_csv(equity_curve, EQUITY_CSV)
     autopsy_rows = build_loss_autopsy(trades, data)
     export_loss_autopsy_csv(autopsy_rows, LOSS_AUTOPSY_CSV)
+    rbr_rows = build_regime_behavior_report(trades, data)
+    export_regime_behavior_csv(rbr_rows, REGIME_BEHAVIOR_CSV)
     report_summary(trades, equity_curve)
     lines, _ = gate_report(trades, equity_curve, data)
     print("\n".join(lines))
     print_loss_autopsy_summary(autopsy_rows)
+    print_regime_behavior_report(rbr_rows)
 
 
 if __name__ == "__main__":
