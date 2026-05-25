@@ -26,3 +26,5 @@ Thumbs.db
 !*.env.example
 backtest_output_4h/
 backtest_output_pullback/
+backtest_output_eth_htf/
+backtest_output_eth_breakout_quality/
