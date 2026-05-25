@@ -56,6 +56,9 @@ def main():
     p.add_argument("--dir", default="backtest_output", help="backtest output dir")
     p.add_argument("--symbol", default="ETH-USD")
     p.add_argument("--side", default="long")
+    p.add_argument("--setup-type", default=None,
+                   help="optional: filter to one setup_type (e.g. breakout, "
+                        "pullback_continuation) if the column exists")
     args = p.parse_args()
 
     trades_path = os.path.join(args.dir, "trades.csv")
@@ -67,10 +70,14 @@ def main():
         df[col] = pd.to_datetime(df[col], utc=True)
 
     total = len(df)
-    df = df[(df["symbol"] == args.symbol) & (df["side"] == args.side)].reset_index(drop=True)
+    df = df[(df["symbol"] == args.symbol) & (df["side"] == args.side)]
+    setup_label = "all setups"
+    if args.setup_type and "setup_type" in df.columns:
+        df = df[df["setup_type"] == args.setup_type]
+        setup_label = f"setup_type={args.setup_type}"
     df = df.sort_values("entry_time").reset_index(drop=True)
     print("=" * 78)
-    print(f"ETH ROBUSTNESS REPORT — {args.symbol} {args.side}-only "
+    print(f"ETH ROBUSTNESS REPORT — {args.symbol} {args.side}-only, {setup_label} "
           f"({len(df)} of {total} trades in trades.csv)")
     print("=" * 78)
     if df.empty:

@@ -79,6 +79,12 @@ EMA_TREND = 50                     # 6H EMA the entry/BTC-confirm uses
 VOL_AVG_PERIOD = 20
 ATR_PERIOD = 14
 ATR_REGIME_PERIOD = 120            # 30 days at 6H
+
+# --- Pullback-continuation entry (DIAGNOSTIC setup; does not affect breakout) ---
+PULLBACK_EMA_FAST = 20             # EMA the pullback pulls back toward
+PULLBACK_EMA_SLOPE_BARS = 10       # bars used to gauge ETH EMA50 slope (self-uptrend)
+PULLBACK_STRONG_CLOSE_FRAC = 0.5   # confirmation close in the upper half of range
+PULLBACK_EMA20_TOL = 1.01          # low within 1% of EMA20 counts as a pullback touch
 ATR_REGIME_MULTIPLE = 2.0          # skip entries when ATR > 2x its regime avg (stress)
 
 # --- Exits ---
@@ -307,6 +313,12 @@ def add_indicators(df):
     # Prior N-bar extremes (shifted so the current bar is excluded -> no look-ahead).
     df["prior_high"] = df["high"].rolling(window=BREAKOUT_LOOKBACK).max().shift(1)
     df["prior_low"] = df["low"].rolling(window=BREAKOUT_LOOKBACK).min().shift(1)
+
+    # Pullback-continuation inputs (additive; breakout does not read these).
+    df["ema_20"] = df["close"].ewm(span=PULLBACK_EMA_FAST, adjust=False).mean()
+    df["ema_50_slope"] = df["ema_50"] - df["ema_50"].shift(PULLBACK_EMA_SLOPE_BARS)
+    df["prev_close"] = df["close"].shift(1)
+    df["prev_low"] = df["low"].shift(1)
     return df
 
 
@@ -406,6 +418,7 @@ class Trade:
     regime_state: str
     rs_return: float
 
+    setup_type: str = "breakout"
     trail_anchor: Optional[float] = None
     exit_time: Optional[pd.Timestamp] = None
     exit_time_partial: Optional[pd.Timestamp] = None
@@ -527,11 +540,54 @@ def evaluate_breakout(row, side, btc_row):
         )
 
 
+def evaluate_pullback(row, side, btc_row):
+    """ETH pullback-continuation entry (DIAGNOSTIC setup; long only).
+
+    Same momentum/regime thesis as the breakout: BTC risk_on and ETH RS rank 1
+    are enforced UPSTREAM by the regime + relative-strength selection, exactly
+    as for the breakout. This adds the pullback pattern, evaluated on the
+    confirmation bar with NO look-ahead:
+      - ETH self-uptrend: close > EMA50 and EMA50 slope up.
+      - pullback toward EMA20: this bar or the prior bar dipped to <= EMA20*1.01
+        while price stayed above EMA50 (uptrend intact).
+      - not a breakdown: the confirmation close reclaimed above EMA20
+        (the "close > EMA20" branch — the look-ahead "next candle" branch is
+        intentionally not used).
+      - confirmation candle: close > prior close and close in the upper half
+        of the bar range.
+    The breakout's volume / ATR-stress filters are NOT applied (this is a
+    different setup with its own listed conditions). Exits/sizing/costs are
+    reused unchanged by the caller.
+    """
+    if side != "long":
+        return False
+    required = ["ema_20", "ema_50", "ema_50_slope", "prev_close", "prev_low"]
+    for col in required:
+        if pd.isna(row[col]):
+            return False
+    bar_range = row["high"] - row["low"]
+    if bar_range <= 0:
+        return False
+    if btc_row is None or pd.isna(btc_row["ema_50"]):
+        return False
+
+    self_uptrend = row["close"] > row["ema_50"] and row["ema_50_slope"] > 0
+    pulled_back = (row["low"] <= row["ema_20"] * PULLBACK_EMA20_TOL
+                   or row["prev_low"] <= row["ema_20"] * PULLBACK_EMA20_TOL)
+    not_breakdown = row["close"] > row["ema_20"]
+    confirm = (row["close"] > row["prev_close"]
+               and (row["close"] - row["low"]) / bar_range >= PULLBACK_STRONG_CLOSE_FRAC)
+    btc_confirm = btc_row["close"] > btc_row["ema_50"]
+    return (self_uptrend and pulled_back and not_breakdown and confirm
+            and row["close"] > row["ema_50"] and btc_confirm)
+
+
 # ---------------------------------------------------------------------------
 # Main backtest loop
 # ---------------------------------------------------------------------------
 
-def run_backtest(data_by_symbol, trade_assets=None, long_only=False, strict_regime=False):
+def run_backtest(data_by_symbol, trade_assets=None, long_only=False,
+                 strict_regime=False, setup="breakout"):
     """Simulate the strategy.
 
     Diagnostic isolation (does NOT change the deployed rules): regime and
@@ -659,7 +715,20 @@ def run_backtest(data_by_symbol, trade_assets=None, long_only=False, strict_regi
 
         bar = indexed[sym].loc[current_time]
         btc_bar = btc_df.loc[current_time] if current_time in btc_df.index else None
-        if not evaluate_breakout(bar, side, btc_bar):
+        # Entry-setup selector. Default "breakout" reproduces the canonical
+        # strategy exactly; "pullback" / "both" are diagnostic additions.
+        if setup == "breakout":
+            entered, this_setup = evaluate_breakout(bar, side, btc_bar), "breakout"
+        elif setup == "pullback":
+            entered, this_setup = evaluate_pullback(bar, side, btc_bar), "pullback_continuation"
+        else:  # "both": breakout takes priority, else pullback
+            if evaluate_breakout(bar, side, btc_bar):
+                entered, this_setup = True, "breakout"
+            elif evaluate_pullback(bar, side, btc_bar):
+                entered, this_setup = True, "pullback_continuation"
+            else:
+                entered, this_setup = False, None
+        if not entered:
             continue
 
         # 5. Entry at the next bar's open (no look-ahead).
@@ -701,6 +770,7 @@ def run_backtest(data_by_symbol, trade_assets=None, long_only=False, strict_regi
             initial_stop_distance=abs(entry_price - stop_price),
             notional_usd=notional, margin_usd=margin, leverage=leverage,
             atr_at_signal=float(atr), regime_state=regime_state, rs_return=rs_ret,
+            setup_type=this_setup,
         )
         open_trades[sym] = trade
         trades_today[sym] = trades_today.get(sym, 0) + 1
@@ -989,6 +1059,7 @@ def build_loss_autopsy(trades, data_by_symbol):
         rows.append({
             "symbol": t.symbol,
             "side": t.side,
+            "setup_type": t.setup_type,
             "entry_time": t.entry_time.isoformat(),
             "exit_time": t.exit_time.isoformat() if t.exit_time is not None else "",
             "exit_reason": t.exit_reason,
@@ -1018,7 +1089,7 @@ def build_loss_autopsy(trades, data_by_symbol):
 def export_loss_autopsy_csv(rows, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fieldnames = [
-        "symbol", "side", "entry_time", "exit_time", "exit_reason",
+        "symbol", "side", "setup_type", "entry_time", "exit_time", "exit_reason",
         "entry_price", "exit_price_final", "gross_pnl_usd", "net_pnl_usd",
         "fees_usd", "slippage_usd", "funding_usd", "r_multiple", "cost_R",
         "bars_held", "MFE_R", "MAE_R", "bars_to_MFE", "bars_to_MAE",
@@ -1157,7 +1228,8 @@ def _trade_regime_features(trades, data_by_symbol):
         hour = t.entry_time.hour
         tb = f"{(hour // 4) * 4:02d}:00-{((hour // 4) * 4 + 4) % 24:02d}:00_UTC"
         feats[id(t)] = {
-            "symbol": t.symbol, "side": t.side, "btc_regime": t.regime_state,
+            "symbol": t.symbol, "side": t.side, "setup_type": t.setup_type,
+            "btc_regime": t.regime_state,
             "asset_self_regime": self_reg, "rs_rank": rs_rank,
             "vol_regime": vol_reg, "entry_extension": ext_b,
             "time_bucket": tb, "day_of_week": dow_names[t.entry_time.dayofweek],
@@ -1170,7 +1242,7 @@ def build_regime_behavior_report(trades, data_by_symbol):
     if not trades:
         return []
     feats = _trade_regime_features(trades, data_by_symbol)
-    dimensions = ["symbol", "side", "btc_regime", "asset_self_regime", "rs_rank",
+    dimensions = ["symbol", "side", "setup_type", "btc_regime", "asset_self_regime", "rs_rank",
                   "vol_regime", "entry_extension", "time_bucket", "day_of_week"]
     rows = []
     for dim in dimensions:
@@ -1466,6 +1538,9 @@ def main(argv=None):
     p.add_argument("--compare-regime", action="store_true",
                    help="Run DEFAULT vs --strict-regime on the same data and "
                         "print a side-by-side metrics table (no CSV export).")
+    p.add_argument("--setup", choices=["breakout", "pullback", "both"], default="breakout",
+                   help="DIAGNOSTIC entry setup: breakout (default, canonical), "
+                        "pullback (ETH pullback-continuation), or both.")
     args = p.parse_args(argv)
     days_back = args.days
 
@@ -1514,7 +1589,8 @@ def main(argv=None):
     print("\nRunning scanner backtest...")
     trades, equity_curve = run_backtest(data, trade_assets=trade_assets,
                                         long_only=args.long_only,
-                                        strict_regime=args.strict_regime)
+                                        strict_regime=args.strict_regime,
+                                        setup=args.setup)
     print(f"Backtest complete. {len(trades)} trades simulated.")
 
     export_trades_csv(trades, TRADES_CSV)
