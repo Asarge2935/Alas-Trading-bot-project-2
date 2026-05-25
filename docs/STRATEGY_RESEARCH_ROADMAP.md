@@ -18,6 +18,22 @@ _Last updated: 2026-05-25._
 | **SOL under current logic** | SOL was the single largest drag on net P&L; high-beta behavior is not served by the ETH-style breakout. |
 | **BTC under ETH breakout logic** | BTC did not behave well when forced into the ETH momentum/breakout model; it is better treated as a regime/macro asset. |
 | **ETH pullback continuation** | Full-window pullback-only: ~42 trades, PF ≈ 0.62, avg R ≈ −0.25, net ≈ −$50. Combined breakout+pullback turned negative. **This pullback definition is rejected** unless a brand-new hypothesis is explicitly defined later. |
+| **BTC trend-continuation pullback** | Sufficient sample, no edge across 12H/1D (see §1.1). PF < 1 on every run. **Rejected; do not tune.** |
+
+### 1.1 BTC trend-continuation pullback — diagnostic result (`btc_diagnostic.py`)
+
+| Run | Trades | PF | Avg R | Net P&L |
+|---|---|---|---|---|
+| 12H full | 157 | 0.83 | −0.06 | −$48.03 |
+| 1D full | 108 | 0.84 | −0.05 | −$31.16 |
+| 12H 730-day smoke | 73 | 0.90 | −0.03 | −$13.25 |
+| 1D 730-day smoke | 51 | 0.71 | −0.12 | −$30.04 |
+
+**Verdict: REJECT BTC trend-continuation pullback.** Sufficient sample (well
+above the 30-trade gate) and **no edge** — PF < 1 and avg R < 0 on every run.
+**Do not tune this setup.** BTC likely needs a different model — candidates:
+**compression breakout**, **liquidity-sweep reversal**, or a **funding/open-
+interest positioning** model.
 
 ## 2. Promising but NOT deployable
 
@@ -48,10 +64,11 @@ Active research (diagnostic only):
 **Do not treat BTC, ETH, and SOL as the same asset.** Build toward separate
 modules:
 
-- **BTC = regime / macro asset.** Needs its own model (higher-timeframe
-  confirmation, chop avoidance; candidate ideas: trend-continuation pullback,
-  compression breakout, liquidity-sweep reversal). **Do not force BTC into the
-  ETH breakout model.**
+- **BTC = regime / macro asset.** Separate module; **no deployable BTC setup
+  yet.** Trend-continuation pullback has been **tested and rejected** (§1.1:
+  sufficient sample, no edge). Remaining candidate ideas to test separately:
+  **compression breakout**, **liquidity-sweep reversal**, **funding/open-
+  interest positioning**. **Do not force BTC into the ETH breakout model.**
 - **ETH = current priority.** Best-behaved candidate for this system; a
   momentum/rotation breakout. Continue researching ETH long breakout. **ETH
   pullback stays rejected** unless a new hypothesis is explicitly defined.
@@ -87,6 +104,7 @@ does **not** authorize live trading.
 | `eth_4h_diagnostic.py` | ETH breakout at 4H (aggregated from 1H). |
 | `eth_pullback_diagnostic.py` | Breakout vs pullback-continuation vs combined (tagged by `setup_type`). |
 | `eth_breakout_quality.py` | Winner-vs-loser feature audit for ETH breakouts. |
+| `btc_diagnostic.py` | BTC trend-continuation pullback, 12H/1D (rejected — see §1.1). |
 | `robustness_report.py` | Per-run robustness (year, leave-one-out, IS/OOS, loss autopsy); `--setup-type` filter. |
 
 All of the above are **diagnostic only**. No exchange adapter, order placement,
