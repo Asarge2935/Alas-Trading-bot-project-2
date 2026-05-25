@@ -29,3 +29,4 @@ backtest_output_pullback/
 backtest_output_eth_htf/
 backtest_output_eth_breakout_quality/
 backtest_output_btc_diagnostic/
+backtest_output_btc_compression/

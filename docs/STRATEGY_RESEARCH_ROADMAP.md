@@ -18,7 +18,7 @@ _Last updated: 2026-05-25._
 | **SOL under current logic** | SOL was the single largest drag on net P&L; high-beta behavior is not served by the ETH-style breakout. |
 | **BTC under ETH breakout logic** | BTC did not behave well when forced into the ETH momentum/breakout model; it is better treated as a regime/macro asset. |
 | **ETH pullback continuation** | Full-window pullback-only: ~42 trades, PF ≈ 0.62, avg R ≈ −0.25, net ≈ −$50. Combined breakout+pullback turned negative. **This pullback definition is rejected** unless a brand-new hypothesis is explicitly defined later. |
-| **BTC trend-continuation pullback** | Sufficient sample, no edge across 12H/1D (see §1.1). PF < 1 on every run. **Rejected; do not tune.** |
+| **Simple BTC higher-timeframe trend-continuation pullback** | Sufficient sample, no edge across 12H/1D (see §1.1). PF < 1 on every run. **This specific passive pullback model is rejected; do not tune it.** NOTE: this rejects the *model*, **not BTC** — BTC remains an open research module (§4.1). |
 
 ### 1.1 BTC trend-continuation pullback — diagnostic result (`btc_diagnostic.py`)
 
@@ -29,11 +29,19 @@ _Last updated: 2026-05-25._
 | 12H 730-day smoke | 73 | 0.90 | −0.03 | −$13.25 |
 | 1D 730-day smoke | 51 | 0.71 | −0.12 | −$30.04 |
 
-**Verdict: REJECT BTC trend-continuation pullback.** Sufficient sample (well
-above the 30-trade gate) and **no edge** — PF < 1 and avg R < 0 on every run.
-**Do not tune this setup.** BTC likely needs a different model — candidates:
-**compression breakout**, **liquidity-sweep reversal**, or a **funding/open-
-interest positioning** model.
+**Verdict: REJECT the simple BTC higher-timeframe trend-continuation pullback
+model — NOT BTC itself.** Sufficient sample (well above the 30-trade gate) and
+**no edge** — PF < 1 and avg R < 0 on every run. **Do not tune this setup.**
+
+Interpretation:
+- Sufficient sample; the passive BTC pullback model simply has no edge.
+- Losers **rarely reached +1R** before failing, so **exits are not the main
+  issue** — the trades were wrong from entry.
+- The likely problem is **entry timing / regime / volatility context**, not the
+  exit framework. A passive "buy the dip in an uptrend" rule does not capture
+  when BTC is actually set up to continue.
+- This points research toward **structural** BTC hypotheses (§4.1), not
+  parameter tweaks.
 
 ## 2. Promising but NOT deployable
 
@@ -64,11 +72,10 @@ Active research (diagnostic only):
 **Do not treat BTC, ETH, and SOL as the same asset.** Build toward separate
 modules:
 
-- **BTC = regime / macro asset.** Separate module; **no deployable BTC setup
-  yet.** Trend-continuation pullback has been **tested and rejected** (§1.1:
-  sufficient sample, no edge). Remaining candidate ideas to test separately:
-  **compression breakout**, **liquidity-sweep reversal**, **funding/open-
-  interest positioning**. **Do not force BTC into the ETH breakout model.**
+- **BTC = regime / macro asset, and an OPEN research module (§4.1).** BTC is
+  **not** rejected — only the simple passive trend-continuation pullback model
+  is (§1.1). No deployable BTC setup yet. **Do not force BTC into the ETH
+  breakout model.**
 - **ETH = current priority.** Best-behaved candidate for this system; a
   momentum/rotation breakout. Continue researching ETH long breakout. **ETH
   pullback stays rejected** unless a new hypothesis is explicitly defined.
@@ -79,6 +86,37 @@ modules:
 Target architecture (future): independent `BTC module`, `ETH module`,
 `SOL module`, each separately tagged and measured. Current focus is the ETH
 module.
+
+### 4.1 BTC research module (open)
+
+BTC remains a separate, active research module. The simple passive pullback
+model is rejected (§1.1); the next hypotheses are **structural**, not
+parameter variants of the same idea.
+
+**Future BTC hypotheses (each tested separately, tagged):**
+1. **Compression → Expansion → Retest** — trade BTC out of a volatility
+   squeeze on the expansion breakout (and/or its retest), not on a passive dip.
+   _(First test: `btc_compression_diagnostic.py`.)_
+2. **Failed breakdown / liquidity-sweep reversal** — fade a sweep of obvious
+   lows that fails and reclaims.
+3. **Funding + open-interest crowding model** — fade/align with crowded
+   positioning using funding rate and OI.
+
+**Warning — how to research BTC:**
+- **Avoid EMA/threshold micro-optimization.** Do not tune EMA spans, ATR
+  multiples, or gate cutoffs to make a weak idea look good (curve-fitting).
+- **Only test structural hypotheses** (regime / volatility-state / positioning
+  changes). If a structural idea has no edge at sensible defaults, reject it —
+  do not tune it into looking profitable.
+
+**BTC diagnostic needs (data/features for the hypotheses above):**
+- volatility regime (e.g. ATR14 / ATR120)
+- compression state (range/BB-width percentile)
+- trend strength
+- session / time bucket
+- funding rate
+- open-interest delta
+- liquidation proxy (if available)
 
 ## 5. Deployment gates (must ALL pass on real data before paper trading)
 
@@ -105,6 +143,7 @@ does **not** authorize live trading.
 | `eth_pullback_diagnostic.py` | Breakout vs pullback-continuation vs combined (tagged by `setup_type`). |
 | `eth_breakout_quality.py` | Winner-vs-loser feature audit for ETH breakouts. |
 | `btc_diagnostic.py` | BTC trend-continuation pullback, 12H/1D (rejected — see §1.1). |
+| `btc_compression_diagnostic.py` | BTC compression → expansion breakout, 12H/1D (§4.1 hypothesis 1). |
 | `robustness_report.py` | Per-run robustness (year, leave-one-out, IS/OOS, loss autopsy); `--setup-type` filter. |
 
 All of the above are **diagnostic only**. No exchange adapter, order placement,
