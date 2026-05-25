@@ -154,13 +154,16 @@ def _btc_compression_entry(row):
     return self_uptrend and compressed and breakout
 
 
-def _run_btc_compression(btc_indexed, extra_filter=None):
+def _run_btc_compression(btc_indexed, extra_filter=None, early_exit_fn=None):
     """Standalone BTC-only long loop (mirrors run_backtest's MTM / loss-halt /
     drawdown / single-position management), reusing backtest.py helpers.
 
     extra_filter: optional callable(row)->bool applied AFTER the compression
-    entry. None (default) reproduces the baseline compression breakout exactly;
-    used by the HTF-alignment diagnostic to add ONE structural filter."""
+    entry. None (default) reproduces the baseline compression breakout exactly.
+    early_exit_fn: optional callable(trade, bar, current_time)->exit_event|None,
+    checked each bar ONLY when the normal exit logic did not fire (stop has
+    priority). None (default) leaves exits unchanged. Both are used by the
+    compression-next diagnostic; defaults preserve every existing caller."""
     bdf = btc_indexed.reset_index()
     pos_of = {t: i for i, t in enumerate(bdf["time"])}
     open_trades, closed, equity_curve = {}, [], []
@@ -177,6 +180,8 @@ def _run_btc_compression(btc_indexed, extra_filter=None):
         for sym in list(open_trades):
             tr = open_trades[sym]
             ev = bt.check_exit(tr, bar, current_time)
+            if ev is None and early_exit_fn is not None:
+                ev = early_exit_fn(tr, bar, current_time)   # stop has priority
             if ev:
                 bt.finalize_trade(tr, ev)
                 closed.append(tr)

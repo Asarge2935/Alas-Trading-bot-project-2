@@ -45,13 +45,35 @@ Interpretation:
 
 ## 2. Promising but NOT deployable
 
-- **ETH long breakout under strict BTC risk-on.** The only pocket with positive
+- **ETH long breakout under strict BTC risk-on — PRIMARY ACTIVE RESEARCH LEAD.**
+  ETH-USD long-only, 6H, strict-regime breakout. The only pocket with positive
   expectancy so far, but **under-sampled** and concentration-sensitive:
   - 6H: ~13 trades, PF ≈ 2.13, avg R ≈ +0.50, net ≈ +$32.93; still positive
     without the best trade, but **below the 30-trade gate** and top-trade
     concentration still matters.
-  - 4H: ~16 trades, PF ≈ 1.43, avg R ≈ +0.26 — only ~3 more trades than 6H and
-    **weaker** robustness (4H added noise, not signal).
+  - 4H: ~16 trades, PF ≈ 1.43, avg R ≈ +0.26 — **weakened the edge**; 4H does
+    **not** replace 6H.
+  - 12H / 1D: **confirmed quality but reduced sample size** (fewer trades).
+
+  **Not deployable yet** (trade count below the sample gate). **Current priority
+  is diagnostics, not new entries.** ETH **pullback continuation is rejected**
+  (§1) and must **not** be combined with the breakout model.
+
+  **ETH goal (tightened):** increase sample size through **market occurrence and
+  robust validation**, NOT by weakening setup quality. Do not loosen the entry
+  to manufacture trades.
+
+  **ETH research focus areas (diagnostic only — `eth_quality_audit_v2.py`):**
+  - time-to-expansion (how soon +0.5R / +1R is reached)
+  - **breakout acceleration quality** — how fast price expands after the
+    breakout; whether strong winners *separate quickly* from entry; whether
+    *slow* trades correlate with failure
+  - distribution stability (top-trade / top-3 / best-month concentration,
+    ex-best, rolling drawdowns)
+  - ETH/BTC relative strength before entry
+  - BTC regime strength before entry
+  - volatility / chop state (ATR ratio, range compression)
+  - early-failure behavior (did adverse move come before any favorable move)
 
 ## 3. Current hypothesis
 
@@ -121,13 +143,27 @@ parameter variants of the same idea.
 ### 4.1.1 BTC compression breakout — results so far (research lead, NOT deployable)
 
 The compression→expansion idea (hypothesis 1) is **structurally better** than the
-passive pullback, but remains **under-sampled and fragile** — a research lead
-only, not deployable.
+passive pullback, but remains **under-sampled and fragile** — a **SECONDARY
+research lead only**, not deployable.
 
-**Baseline 12H compression breakout** (`btc_compression_diagnostic.py`):
-21 trades, PF 1.50, avg R +0.14, net +$14.15 — but **ex-best PF 1.04** (edge
-nearly all in one trade) and the 730-day smoke weakened to PF 0.87. Below the
-30-trade gate.
+**Framing:** BTC compression behaves like a **volatility-release / volatility-
+event model**, NOT a normal directional trend-continuation model. It fires when
+BTC exits a volatility squeeze; its character is event-driven (vol expansion),
+which is why sample is naturally low and outcomes are clustered.
+
+**Why it is interesting (vs the rejected pullback):**
+- better PF and drawdown than the pullback model
+- better MAE behavior (losers don't bleed as far before resolving)
+- aligns with BTC's compression→expansion volatility behavior, not with passive
+  dip-buying
+
+**Warnings (all currently true — do NOT advance on PF alone):**
+- fewer than 30 trades (sample gate fails)
+- too few winning trades (winner-count gate fails)
+- top-trade dependence
+- ex-best collapse (ex-best PF ≈ 1.04)
+- weak / unstable OOS (730-day smoke weakened to PF 0.87)
+- **NOT deployable**
 
 **Compression quality audit** (`btc_compression_quality.py`, **LOW_SAMPLE —
 descriptive only**): 21 trades, 9 winners / 12 losers.
@@ -150,28 +186,75 @@ descriptive only**): 21 trades, 9 winners / 12 losers.
 **Verdict:**
 - **HTF alignment did NOT improve BTC compression** — every variant cut sample
   and dropped ex-best PF below 1.0 (more fragile, not less).
-- **Do not add EMA200 / EMA50-slope filters.**
-- **BTC compression remains a research lead only — NOT deployable** (<30 trades
-  and ex-best fragility).
-- **Next BTC compression question (if tested):** does **full compression
-  (comp_count == 3)** improve quality without overfitting? Test as a standalone
-  variant (`btc_full_compression_diagnostic.py`); expect a *very* small sample,
-  so treat any improvement as indicative only and **do not tune**.
+- **EMA200 / EMA50-slope HTF-alignment filters are REJECTED / not useful for now.**
+- **BTC compression remains a SECONDARY research lead only — NOT deployable**
+  (<30 trades, too few winners, ex-best fragility).
 
-## 5. Deployment gates (must ALL pass on real data before paper trading)
+**Next BTC hypotheses (each tested separately, no stacking, no tuning):**
+1. **Full compression only (comp_count == 3)** — `btc_full_compression_diagnostic.py`
+   and `btc_compression_next_diagnostic.py`. Expect a *very* small sample;
+   treat any gain as indicative only.
+2. **One simple early-failure exit** — a single deterministic rule (e.g. exit if
+   price closes back inside the prior compression range). Tested in
+   `btc_compression_next_diagnostic.py`. One rule only; do not compare many exits.
+3. **Liquidity sweep + reclaim** (later) — separate structural hypothesis.
+4. **Perp data (later)** — funding rate, OI delta, liquidation clusters.
 
-A setup is **not deployable** until it clears every gate:
+## 5. Deployment gates / global validation rules (must ALL pass on real data)
+
+> **Core philosophy:** No strategy advances on **profit factor alone.**
+> Robustness, distribution stability, ex-best behavior, minimum winner count,
+> regime consistency, and OOS preservation are equally important.
+
+A setup is **not deployable** until it clears **every** gate:
 
 1. **≥ 30 trades** (sample sufficiency).
-2. **Profit factor ≥ 1.3.**
-3. **Avg R > +0.2.**
-4. **Positive expectancy WITHOUT the single best trade** (no single-trade dependence).
-5. **Max drawdown < 20–25%.**
-6. **Not profitable in only one calendar year** (edge must persist across years / IS & OOS).
-7. **Paper trading required before any live trading.**
+2. **≥ 12–15 winning trades** (winner-count gate).
+3. **Profit factor ≥ 1.3.**
+4. **Avg R > +0.2.**
+5. **Positive expectancy WITHOUT the single best trade** (no single-trade dependence).
+6. **Reasonable max drawdown** (< ~20–25%).
+7. **Not dependent on one year, one month, or one outlier trade.**
+8. **No single month contributes more than ~40–50% of total net profit.**
+9. **OOS PF must not collapse** relative to IS PF.
+10. **Distribution stability checked** before paper trading (top-trade / top-3 /
+    best-month concentration, ex-best, rolling drawdowns).
+11. **Regime segmentation required** for all future diagnostics — segment by
+    **bull / bear / range-chop** (and BTC risk-on/off, volatility state) when
+    possible.
 
-Passing the backtest gates only qualifies a setup for **paper trading** — it
-does **not** authorize live trading.
+**Persistence caveat:** a historical edge does **not** imply persistence.
+Future validation must monitor for **regime drift and structural decay** — a
+setup that passed once can stop working.
+
+- **No live trading.** Ever, in this phase.
+- **No paper trading** until a candidate clears the research gates above.
+- Passing the gates only qualifies a setup for **paper trading** — it does
+  **not** authorize live trading.
+
+## 5.1 Research phase vs Validation phase
+
+**Research phase (where we are now).**
+- *Allowed:* diagnostics, descriptive analysis, hypothesis generation,
+  single-hypothesis testing.
+- *Not allowed:* deployment, live trading, paper trading, parameter tuning to
+  force profitability, combining many new filters at once.
+
+**Validation phase** — entered **only after** a candidate clears the research
+gates (sample, winner-count, robustness, distribution stability, regime
+segmentation, OOS preservation). Only then:
+- paper **signal logging** (no orders)
+- slippage validation
+- fee validation
+- funding validation
+- execution-quality validation
+
+## 5.2 No feature stacking
+
+**Do not combine multiple new filters simultaneously unless each has first been
+tested independently.** Avoid "overfit soup" from stacking ETH/BTC strength +
+volatility state + chop filter + session filter + acceleration filter + … all at
+once. One hypothesis at a time; measure it alone; only then consider combining.
 
 ## 6. Diagnostics index
 
@@ -182,8 +265,13 @@ does **not** authorize live trading.
 | `eth_4h_diagnostic.py` | ETH breakout at 4H (aggregated from 1H). |
 | `eth_pullback_diagnostic.py` | Breakout vs pullback-continuation vs combined (tagged by `setup_type`). |
 | `eth_breakout_quality.py` | Winner-vs-loser feature audit for ETH breakouts. |
+| `eth_quality_audit_v2.py` | ETH 6H breakout audit v2: distribution stability, time-to-expansion / acceleration, regime segmentation, monthly tables. |
 | `btc_diagnostic.py` | BTC trend-continuation pullback, 12H/1D (rejected — see §1.1). |
 | `btc_compression_diagnostic.py` | BTC compression → expansion breakout, 12H/1D (§4.1 hypothesis 1). |
+| `btc_compression_quality.py` | Winner-vs-loser feature audit for BTC compression breakouts. |
+| `btc_htf_alignment_diagnostic.py` | BTC compression + EMA200 / slope HTF filters (rejected — §4.1.1). |
+| `btc_full_compression_diagnostic.py` | BTC compression baseline vs comp_count==3. |
+| `btc_compression_next_diagnostic.py` | BTC compression: baseline / full / +early-failure-exit variants. |
 | `robustness_report.py` | Per-run robustness (year, leave-one-out, IS/OOS, loss autopsy); `--setup-type` filter. |
 
 All of the above are **diagnostic only**. No exchange adapter, order placement,
