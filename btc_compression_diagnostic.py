@@ -115,6 +115,24 @@ def _build_btc_df(entry_seconds, fetch_gran, agg_freq, days):
     return df
 
 
+def daily_htf_features(df):
+    """Daily higher-timeframe context derived from an entry-timeframe df.
+
+    Returns a DataFrame indexed by day with d_ema50, d_ema200, d_ema50_slope,
+    d_ema200_slope, shifted one day so a bar uses the PRIOR completed daily
+    value (no look-ahead). Pure helper — not used by this file's main().
+    """
+    s = df.set_index("time")["close"].resample("1D").last().dropna()
+    e50 = s.ewm(span=50, adjust=False).mean()
+    e200 = s.ewm(span=BTC_EMA_LONG, adjust=False).mean()
+    out = pd.DataFrame({
+        "d_ema50": e50, "d_ema200": e200,
+        "d_ema50_slope": e50 / e50.shift(bt.REGIME_SLOPE_DAYS) - 1.0,
+        "d_ema200_slope": e200 / e200.shift(bt.REGIME_SLOPE_DAYS) - 1.0,
+    })
+    return out.shift(1)
+
+
 def _btc_compression_entry(row):
     """Compression (prior bar) + expansion breakout (this bar), long, no look-ahead."""
     needed = ["ema_20", "ema_50", "ema_50_slope", "prior_high", "prior_low",
@@ -134,9 +152,13 @@ def _btc_compression_entry(row):
     return self_uptrend and compressed and breakout
 
 
-def _run_btc_compression(btc_indexed):
+def _run_btc_compression(btc_indexed, extra_filter=None):
     """Standalone BTC-only long loop (mirrors run_backtest's MTM / loss-halt /
-    drawdown / single-position management), reusing backtest.py helpers."""
+    drawdown / single-position management), reusing backtest.py helpers.
+
+    extra_filter: optional callable(row)->bool applied AFTER the compression
+    entry. None (default) reproduces the baseline compression breakout exactly;
+    used by the HTF-alignment diagnostic to add ONE structural filter."""
     bdf = btc_indexed.reset_index()
     pos_of = {t: i for i, t in enumerate(bdf["time"])}
     open_trades, closed, equity_curve = {}, [], []
@@ -192,6 +214,8 @@ def _run_btc_compression(btc_indexed):
         if trades_today >= bt.MAX_TRADES_PER_ASSET_PER_DAY:
             continue
         if not _btc_compression_entry(bar):
+            continue
+        if extra_filter is not None and not extra_filter(bar):
             continue
         i = pos_of[current_time]
         if i + 1 >= len(bdf):
