@@ -41,6 +41,7 @@ Outputs:
 import argparse
 import csv
 import os
+import random
 import time
 import requests
 import pandas as pd
@@ -129,21 +130,59 @@ LOSS_AUTOPSY_CSV = os.path.join(OUTPUT_DIR, "loss_autopsy.csv")
 
 USER_AGENT = "AlasTradingBotBacktester/3.0"
 
+# --- Network hardening (transport only; no strategy logic) ---
+HTTP_TIMEOUT_SECONDS = 30          # was 15; Coinbase pagination is bursty
+HTTP_MAX_RETRIES = 6               # backoff sequence 1,2,4,8,16 (then final try)
+HTTP_MAX_BACKOFF_SECONDS = 16
+RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
 
-def safe_get(url, params, max_retries=5):
-    """HTTP GET with rate-limit backoff and bounded retries."""
+# --- Candle cache (avoid re-downloading the same history every run) ---
+CACHE_DIR = os.path.join("data_cache", "candles")
+CACHE_FRESHNESS_SECONDS = 86400    # reuse cache within a day; otherwise refresh
+
+
+def safe_get(url, params, max_retries=HTTP_MAX_RETRIES):
+    """HTTP GET with exponential backoff + jitter.
+
+    Retries on transient transport errors (ReadTimeout / ConnectionError /
+    Timeout) and retryable HTTP statuses (429 + 5xx). Non-retryable statuses
+    (e.g. 403/404) raise immediately. Raises the last error if all attempts
+    fail. Transport hardening only — does not touch candle data."""
     headers = {"User-Agent": USER_AGENT}
+    transient = (requests.exceptions.ReadTimeout,
+                 requests.exceptions.ConnectionError,
+                 requests.exceptions.Timeout)
+    last_exc = None
     last_response = None
     for attempt in range(max_retries):
-        r = requests.get(url, params=params, headers=headers, timeout=15)
-        last_response = r
-        if r.status_code == 429:
-            time.sleep(0.5 * (2 ** attempt))
-            continue
-        r.raise_for_status()
-        return r
-    last_response.raise_for_status()
-    return last_response
+        reason = None
+        try:
+            r = requests.get(url, params=params, headers=headers,
+                             timeout=HTTP_TIMEOUT_SECONDS)
+            last_response = r
+            if r.status_code in RETRY_STATUS_CODES:
+                reason = f"HTTP {r.status_code}"
+            else:
+                r.raise_for_status()      # non-retryable 4xx raise here
+                return r
+        except transient as e:
+            reason = e.__class__.__name__
+            last_exc = e
+
+        if attempt < max_retries - 1:
+            base = min(2 ** attempt, HTTP_MAX_BACKOFF_SECONDS)
+            sleep_s = base + random.uniform(0, base * 0.25)   # jitter
+            print(f"  Retrying Coinbase request after {reason} "
+                  f"(attempt {attempt + 1}/{max_retries}, waiting {sleep_s:.1f}s) ...",
+                  flush=True)
+            time.sleep(sleep_s)
+
+    if last_response is not None and last_response.status_code in RETRY_STATUS_CODES:
+        last_response.raise_for_status()
+    if last_exc is not None:
+        raise last_exc
+    raise requests.exceptions.HTTPError(
+        f"Coinbase request failed after {max_retries} attempts: {url}")
 
 
 def fetch_candles(product_id, granularity_seconds, days_back):
@@ -182,6 +221,69 @@ def drop_incomplete_candles(df, timeframe_seconds):
     now = pd.Timestamp.now(tz="UTC")
     candle_close_time = df["time"] + pd.Timedelta(seconds=timeframe_seconds)
     return df[candle_close_time <= now].reset_index(drop=True)
+
+
+def _cache_path(product_id, granularity_seconds, days_back):
+    return os.path.join(CACHE_DIR, f"{product_id}_{granularity_seconds}s_{days_back}d.csv")
+
+
+def _read_cache(path):
+    """Return cached raw candles as a DataFrame, or None if absent/unreadable."""
+    if not os.path.exists(path):
+        return None
+    try:
+        df = pd.read_csv(path)
+        if df.empty or "time" not in df.columns:
+            return None
+        df["time"] = pd.to_datetime(df["time"], utc=True)
+        return df.sort_values("time").reset_index(drop=True)
+    except Exception:
+        return None
+
+
+def _write_cache(path, df):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    out = df.copy()
+    out["time"] = out["time"].map(lambda t: t.isoformat())
+    out.to_csv(path, index=False)
+
+
+def load_candles(product_id, granularity_seconds, days_back):
+    """Return RAW candles for a symbol, preferring a fresh local cache.
+
+    Caching only — candle values are identical to a direct fetch; the caller
+    still drops incomplete candles. Resolution order:
+      1. fresh cache (newer than CACHE_FRESHNESS_SECONDS) -> use it
+      2. otherwise fetch; on success refresh the cache
+      3. if the fetch fails but any cache exists -> warn and use the stale cache
+      4. if the fetch fails and no cache exists -> raise clearly
+    """
+    path = _cache_path(product_id, granularity_seconds, days_back)
+    cached = _read_cache(path)
+    if cached is not None and not cached.empty:
+        age = (pd.Timestamp.now(tz="UTC") - cached["time"].max()).total_seconds()
+        if age < CACHE_FRESHNESS_SECONDS:
+            print(f"Using cached candles for {product_id} "
+                  f"({len(cached)} rows, age {age / 3600:.1f}h) ...", flush=True)
+            return cached
+
+    print(f"Fetching {product_id} ...", end=" ", flush=True)
+    try:
+        df = fetch_candles(product_id, granularity_seconds, days_back)
+        if df.empty:
+            raise RuntimeError("empty candle response")
+        _write_cache(path, df)
+        print(f"fetched {len(df)} candles (cached to {path}).", flush=True)
+        return df
+    except Exception as e:
+        if cached is not None and not cached.empty:
+            print(f"\nWARNING: fetch failed for {product_id} "
+                  f"({e.__class__.__name__}: {e}); using cached candles "
+                  f"({len(cached)} rows, possibly stale).", flush=True)
+            return cached
+        print(f"\nERROR: fetch failed for {product_id} and no cache exists at "
+              f"{path}: {e.__class__.__name__}: {e}", flush=True)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -1238,18 +1340,18 @@ def main(argv=None):
 
     data = {}
     for symbol in ASSETS:
-        print(f"Fetching {symbol} ...", end=" ", flush=True)
-        df = fetch_candles(symbol, TIMEFRAME_SECONDS, days_back)
+        df = load_candles(symbol, TIMEFRAME_SECONDS, days_back)
         raw_count = len(df)
         df = drop_incomplete_candles(df, TIMEFRAME_SECONDS)
         if df.empty:
-            print("0 bars — skipping this symbol")
+            print(f"  {symbol}: 0 bars after dropping incomplete — skipping")
             continue
         dropped = raw_count - len(df)
         df = add_indicators(df)
         data[symbol] = df
         suffix = f" (dropped {dropped} incomplete)" if dropped else ""
-        print(f"{len(df)} bars ({df['time'].min().date()} to {df['time'].max().date()}){suffix}")
+        print(f"  {symbol}: {len(df)} bars "
+              f"({df['time'].min().date()} to {df['time'].max().date()}){suffix}")
 
     if "BTC-USD" not in data:
         print("ERROR: BTC-USD data is required for the regime filter — aborting.")
