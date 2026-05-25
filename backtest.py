@@ -216,31 +216,44 @@ def _daily_close(df_6h_indexed):
     return df_6h_indexed["close"].resample("1D").last().dropna()
 
 
-def compute_regime(btc_daily_close):
-    """Three-state BTC regime per day, shifted so a day uses the PRIOR day's state.
+def get_btc_regime(btc_daily_close, strict=False):
+    """Single source of truth for the BTC daily 3-state regime.
 
     Returns a Series indexed by daily (midnight-UTC) Timestamp with values in
-    {"risk_on", "risk_off", "neutral"}. Look up by current_time.normalize().
+    {"risk_on", "risk_off", "neutral"}, shifted so a day uses the PRIOR day's
+    state (no look-ahead). Look up by current_time.normalize().
+
+    strict=False -> the canonical/default regime (unchanged behavior).
+    strict=True  -> the experimental --strict-regime definition: BTC daily
+                    close vs EMA50 with a ±2% band and EMA50 slope sign only.
     """
     close = btc_daily_close.astype(float)
     ema_slow = close.ewm(span=REGIME_EMA_SLOW, adjust=False).mean()
-    ema_fast = close.ewm(span=REGIME_EMA_FAST, adjust=False).mean()
     prev_slow = ema_slow.shift(REGIME_SLOPE_DAYS)
-
     slope = ema_slow / prev_slow - 1.0
-    rising = slope > FLAT_SLOPE_EPS
-    falling = slope < -FLAT_SLOPE_EPS
-    near_band = (close / ema_slow - 1.0).abs() < NEUTRAL_BAND_PCT
-    not_below_ema20 = close >= ema_fast * (1.0 - EMA20_BELOW_LIMIT)
 
-    risk_on = (close > ema_slow) & rising & ~near_band & not_below_ema20
-    risk_off = (close < ema_slow) & falling & ~near_band
+    if strict:
+        risk_on = (close > ema_slow * 1.02) & (slope > 0)
+        risk_off = (close < ema_slow * 0.98) & (slope < 0)
+    else:
+        ema_fast = close.ewm(span=REGIME_EMA_FAST, adjust=False).mean()
+        rising = slope > FLAT_SLOPE_EPS
+        falling = slope < -FLAT_SLOPE_EPS
+        near_band = (close / ema_slow - 1.0).abs() < NEUTRAL_BAND_PCT
+        not_below_ema20 = close >= ema_fast * (1.0 - EMA20_BELOW_LIMIT)
+        risk_on = (close > ema_slow) & rising & ~near_band & not_below_ema20
+        risk_off = (close < ema_slow) & falling & ~near_band
 
     state = np.where(risk_on, "risk_on", np.where(risk_off, "risk_off", "neutral"))
     out = pd.Series(state, index=close.index, name="regime")
     # Bars without enough history (NaN EMAs / slope) are neutral by default.
     out[ema_slow.isna() | prev_slow.isna()] = "neutral"
     return out.shift(1).fillna("neutral")
+
+
+def compute_regime(btc_daily_close):
+    """Backward-compatible alias for the canonical (non-strict) regime."""
+    return get_btc_regime(btc_daily_close, strict=False)
 
 
 def compute_rs(daily_close_by_sym):
@@ -415,7 +428,7 @@ def evaluate_breakout(row, side, btc_row):
 # Main backtest loop
 # ---------------------------------------------------------------------------
 
-def run_backtest(data_by_symbol, trade_assets=None, long_only=False):
+def run_backtest(data_by_symbol, trade_assets=None, long_only=False, strict_regime=False):
     """Simulate the strategy.
 
     Diagnostic isolation (does NOT change the deployed rules): regime and
@@ -437,7 +450,7 @@ def run_backtest(data_by_symbol, trade_assets=None, long_only=False):
 
     # Daily regime + relative strength, derived from the 6H series.
     daily_close = {sym: _daily_close(indexed[sym]) for sym in indexed}
-    regime_by_day = compute_regime(daily_close["BTC-USD"])
+    regime_by_day = get_btc_regime(daily_close["BTC-USD"], strict=strict_regime)
     regime_map = regime_by_day.to_dict()
     rs_by_day = compute_rs(daily_close)
 
@@ -1136,6 +1149,10 @@ def main(argv=None):
                         "of BTC/ETH/SOL. Default: all.")
     p.add_argument("--long-only", action="store_true",
                    help="DIAGNOSTIC: suppress short entries (risk-off -> no trade).")
+    p.add_argument("--strict-regime", action="store_true",
+                   help="EXPERIMENTAL: stricter BTC daily master filter "
+                        "(risk_on: close>EMA50*1.02 & slope>0; "
+                        "risk_off: close<EMA50*0.98 & slope<0; else neutral).")
     args = p.parse_args(argv)
     days_back = args.days
 
@@ -1145,7 +1162,7 @@ def main(argv=None):
         if bad:
             print(f"ERROR: --trade-assets {bad} not in universe {ASSETS}")
             return
-    is_diagnostic = bool(trade_assets) or args.long_only
+    is_diagnostic = bool(trade_assets) or args.long_only or args.strict_regime
 
     print(f"Backtest config: {days_back} days, 6H bars, assets: {', '.join(ASSETS)}")
     print(f"Regime: BTC 1D EMA{REGIME_EMA_SLOW} (3-state)  |  RS: {RS_LOOKBACK_DAYS}d return")
@@ -1154,7 +1171,8 @@ def main(argv=None):
           f"weekly-loss {MAX_WEEKLY_LOSS_PCT}%, max {MAX_OPEN_POSITIONS} open")
     if is_diagnostic:
         print(f"** DIAGNOSTIC ISOLATION (not the deployed strategy): "
-              f"trade_assets={trade_assets or 'all'}, long_only={args.long_only} **")
+              f"trade_assets={trade_assets or 'all'}, long_only={args.long_only}, "
+              f"strict_regime={args.strict_regime} **")
     print()
 
     data = {}
@@ -1178,7 +1196,8 @@ def main(argv=None):
 
     print("\nRunning scanner backtest...")
     trades, equity_curve = run_backtest(data, trade_assets=trade_assets,
-                                        long_only=args.long_only)
+                                        long_only=args.long_only,
+                                        strict_regime=args.strict_regime)
     print(f"Backtest complete. {len(trades)} trades simulated.")
 
     export_trades_csv(trades, TRADES_CSV)
