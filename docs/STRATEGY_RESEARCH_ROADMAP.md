@@ -91,3 +91,59 @@ does **not** authorize live trading.
 
 All of the above are **diagnostic only**. No exchange adapter, order placement,
 paper, or live behavior is affected by anything in this roadmap.
+
+## 7. Future SOL Module — High-Beta Liquidity/Volatility Model
+
+**STATUS: SOL is REJECTED under the current ETH-style strategy and is NOT part
+of the current trading candidate. SOL is future experimental research only.**
+Nothing in this section is implemented, tested, deployed, paper, or live. No
+SOL strategy code exists yet; this records the intended research direction.
+
+### Principles
+1. **SOL should not use the ETH breakout/pullback rules.** It is a different
+   market microstructure and must be modeled on its own terms.
+2. **Direction alone is not enough for SOL perps.** Being right on direction
+   does not survive SOL's noise, wicks, and funding/leverage costs.
+3. **SOL requires timing, volatility, liquidity, leverage, positioning, and
+   exit discipline** — all together, not direction prediction alone.
+4. **SOL behaves as a high-beta, liquidity-hunting market**, characterized by:
+   - fake breakouts
+   - stop runs
+   - violent squeezes
+   - V-reversals
+   - volatility regime shifts
+5. **Model around trapped positioning, not simple direction prediction.** The
+   edge (if any) comes from fading/aligning with where crowded positions are
+   forced to unwind, not from forecasting price.
+
+### Candidate SOL setup families (to be tested separately, each tagged)
+1. **Volatility expansion after compression** (range/ATR compression → expansion).
+2. **Liquidation flush reversal** (capitulation flush → mean reversion).
+3. **Failed breakout / trap reversal** (breakout fails and reverses on trapped entries).
+4. **Funding + open-interest crowding reversal** (crowded positioning unwind).
+
+### Future SOL data requirements
+- price
+- volume
+- ATR / realized volatility
+- VWAP
+- funding rate
+- open interest
+- spread / depth (if available)
+- liquidation proxy or liquidation data (if available)
+- BTC regime
+- SOL/BTC relative strength
+- time / session bucket
+
+### Future SOL risk rules
+- smaller starting risk than ETH
+- dynamic leverage based on volatility
+- hard daily drawdown stop
+- no averaging down
+- no trading during extreme spread / high-chaos conditions
+- no forced daily trades
+- strict max-consecutive-loss stop
+
+These principles, setup families, data, and risk rules are research notes only.
+Any future SOL module must still clear every deployment gate in §5 on real data,
+and would require paper trading before any live consideration.
