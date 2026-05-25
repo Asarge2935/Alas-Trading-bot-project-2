@@ -106,9 +106,11 @@ def _build_btc_df(entry_seconds, fetch_gran, agg_freq, days):
     comp_bb = bbw <= bbw.rolling(COMPRESSION_LOOKBACK).quantile(COMPRESSION_PCTL)
 
     # Compression must precede the breakout -> evaluate on the PRIOR closed bar.
-    df["comp_atr_prev"] = comp_atr.shift(1).fillna(False)
-    df["comp_range_prev"] = comp_range.shift(1).fillna(False)
-    df["comp_bb_prev"] = comp_bb.shift(1).fillna(False)
+    # shift(fill_value=False) keeps bool dtype (no NaN), avoiding the pandas
+    # fillna-downcast FutureWarning; values are identical to before.
+    df["comp_atr_prev"] = comp_atr.shift(1, fill_value=False)
+    df["comp_range_prev"] = comp_range.shift(1, fill_value=False)
+    df["comp_bb_prev"] = comp_bb.shift(1, fill_value=False)
     df["comp_count_prev"] = (df["comp_atr_prev"].astype(int)
                              + df["comp_range_prev"].astype(int)
                              + df["comp_bb_prev"].astype(int))

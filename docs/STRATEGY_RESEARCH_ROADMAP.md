@@ -118,6 +118,46 @@ parameter variants of the same idea.
 - open-interest delta
 - liquidation proxy (if available)
 
+### 4.1.1 BTC compression breakout — results so far (research lead, NOT deployable)
+
+The compression→expansion idea (hypothesis 1) is **structurally better** than the
+passive pullback, but remains **under-sampled and fragile** — a research lead
+only, not deployable.
+
+**Baseline 12H compression breakout** (`btc_compression_diagnostic.py`):
+21 trades, PF 1.50, avg R +0.14, net +$14.15 — but **ex-best PF 1.04** (edge
+nearly all in one trade) and the 730-day smoke weakened to PF 0.87. Below the
+30-trade gate.
+
+**Compression quality audit** (`btc_compression_quality.py`, **LOW_SAMPLE —
+descriptive only**): 21 trades, 9 winners / 12 losers.
+- By compression count: **comp_count 2 → 3W/9L (25% win)**; **comp_count 3 →
+  6W/3L (67% win)**.
+- Winners had **lower ATR14/ATR120, tighter range percentile, and tighter BB-
+  width percentile** than losers (i.e. winners came from *deeper* compression).
+- **Volume ratio and breakout distance were HIGHER for losers** — raw breakout
+  strength did **not** separate winners from losers.
+
+**HTF-alignment diagnostic** (`btc_htf_alignment_diagnostic.py`, one filter at a time):
+
+| Variant | Trades | PF | Avg R | Net | Ex-best PF |
+|---|---|---|---|---|---|
+| baseline | 21 | 1.50 | +0.14 | +$14.15 | 1.04 |
+| close > daily EMA200 | 16 | 1.31 | +0.09 | +$6.86 | 0.98 |
+| daily EMA50 slope > 0 | 15 | 0.98 | −0.00 | −$0.38 | 0.70 |
+| both | 13 | 1.26 | +0.08 | +$5.12 | 0.89 |
+
+**Verdict:**
+- **HTF alignment did NOT improve BTC compression** — every variant cut sample
+  and dropped ex-best PF below 1.0 (more fragile, not less).
+- **Do not add EMA200 / EMA50-slope filters.**
+- **BTC compression remains a research lead only — NOT deployable** (<30 trades
+  and ex-best fragility).
+- **Next BTC compression question (if tested):** does **full compression
+  (comp_count == 3)** improve quality without overfitting? Test as a standalone
+  variant (`btc_full_compression_diagnostic.py`); expect a *very* small sample,
+  so treat any improvement as indicative only and **do not tune**.
+
 ## 5. Deployment gates (must ALL pass on real data before paper trading)
 
 A setup is **not deployable** until it clears every gate:
