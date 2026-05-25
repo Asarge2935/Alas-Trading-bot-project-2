@@ -120,6 +120,7 @@ OOS_SPLIT_FRAC = 0.70              # first 70% of the window = in-sample
 OUTPUT_DIR = "./backtest_output"
 TRADES_CSV = os.path.join(OUTPUT_DIR, "trades.csv")
 EQUITY_CSV = os.path.join(OUTPUT_DIR, "equity_curve.csv")
+LOSS_AUTOPSY_CSV = os.path.join(OUTPUT_DIR, "loss_autopsy.csv")
 
 
 # ---------------------------------------------------------------------------
@@ -744,6 +745,213 @@ def export_equity_csv(curve, path):
     print(f"Exported equity curve ({len(curve)} points) to {path}")
 
 
+# ---------------------------------------------------------------------------
+# Loss autopsy — ANALYSIS ONLY. Reads the produced trades + the same price
+# series; it changes no entries, exits, sizing, or costs.
+# ---------------------------------------------------------------------------
+
+# A "loss" matches report_summary's convention: net P&L <= 0.
+# Classification thresholds (descriptive heuristics, not strategy parameters):
+AUTOPSY_INSTANT_BARS = 2          # stopped within ~2 bars -> breakout failed instantly
+AUTOPSY_SLOW_BLEED_BARS = 6       # held >= 6 bars, never got going -> slow bleed
+AUTOPSY_ALMOST_TARGET_R = 1.0     # MFE reached >= 1.0R (target_1 is +1.5R)
+AUTOPSY_STOP_TIGHT_R = 0.5        # had >= 0.5R in favor before the stop hit
+AUTOPSY_CHOP_MFE_R = 0.5          # never made 0.5R of progress
+AUTOPSY_CHOP_MAE_R = 1.0          # ...and never took a clean 1R hit -> oscillated
+
+
+def _one_r_dollars(trade):
+    """Initial risk in $ — identical to finalize_trade's r_multiple denominator."""
+    return (trade.initial_stop_distance / trade.entry_price) * trade.notional_usd
+
+
+def _trade_excursions(trade, sym_indexed):
+    """MFE_R / MAE_R and the bar offsets at which they occurred, derived by
+    re-walking the bars the trade was actually open for. Excursions are in
+    price-R (gross), the standard MFE/MAE convention."""
+    idx = sym_indexed.index
+    bars = sym_indexed.loc[(idx >= trade.entry_time) & (idx <= trade.exit_time)]
+    R = trade.initial_stop_distance
+    if bars.empty or R <= 0:
+        return 0.0, 0.0, 0, 0
+    best_fav, best_adv, b_mfe, b_mae = None, None, 0, 0
+    for i, (_, row) in enumerate(bars.iterrows()):
+        if trade.side == "long":
+            fav = row["high"] - trade.entry_price
+            adv = trade.entry_price - row["low"]
+        else:
+            fav = trade.entry_price - row["low"]
+            adv = row["high"] - trade.entry_price
+        if best_fav is None or fav > best_fav:
+            best_fav, b_mfe = fav, i
+        if best_adv is None or adv > best_adv:
+            best_adv, b_mae = adv, i
+    return best_fav / R, max(best_adv, 0.0) / R, b_mfe, b_mae
+
+
+def _classify_loss(trade, mfe_r, mae_r):
+    """Multi-label classification of a single losing trade."""
+    labels = []
+    reason = trade.exit_reason
+    bars = trade.bars_held
+    net = trade.net_pnl_usd
+    gross = trade.gross_pnl_usd
+
+    if reason == "time_stop" or (mfe_r < AUTOPSY_CHOP_MFE_R and mae_r < AUTOPSY_CHOP_MAE_R):
+        labels.append("regime_chop_loss")
+    if mfe_r < AUTOPSY_CHOP_MFE_R and mae_r >= AUTOPSY_CHOP_MAE_R and bars <= 3:
+        labels.append("regime_against_trade")
+    if bars <= AUTOPSY_INSTANT_BARS and mfe_r < AUTOPSY_CHOP_MFE_R:
+        labels.append("instant_failure")
+    if bars >= AUTOPSY_SLOW_BLEED_BARS and mfe_r < AUTOPSY_ALMOST_TARGET_R and net < 0:
+        labels.append("slow_bleed")
+    if mfe_r >= AUTOPSY_ALMOST_TARGET_R:
+        labels.append("almost_hit_target")
+    if (trade.exit_price_partial is not None or mfe_r >= PARTIAL_R) and net < 0:
+        labels.append("gave_back_profit")
+    if reason == "stop_hit" and mfe_r >= AUTOPSY_STOP_TIGHT_R:
+        labels.append("stop_too_tight")
+    if gross >= 0 and net < 0:
+        labels.append("cost_drag_loss")
+    if trade.symbol == "SOL-USD":
+        labels.append("asset_specific_SOL")
+    if trade.side == "short":
+        labels.append("short_side_loss")
+    return labels
+
+
+def build_loss_autopsy(trades, data_by_symbol):
+    """Return a list of per-losing-trade dict rows for loss_autopsy.csv.
+    ANALYSIS ONLY — recomputes RS exactly as run_backtest does for the rank."""
+    indexed = {sym: df.set_index("time") for sym, df in data_by_symbol.items()}
+    daily_close = {sym: _daily_close(indexed[sym]) for sym in indexed}
+    rs_by_day = compute_rs(daily_close)
+
+    rows = []
+    for t in trades:
+        if t.net_pnl_usd > 0:                      # losers only (net <= 0)
+            continue
+        sym_indexed = indexed.get(t.symbol)
+        if sym_indexed is None:
+            continue
+        mfe_r, mae_r, b_mfe, b_mae = _trade_excursions(t, sym_indexed)
+        one_r = _one_r_dollars(t)
+        total_costs = t.fees_usd + t.slippage_usd + t.funding_usd
+        cost_r = total_costs / one_r if one_r > 0 else 0.0
+
+        # Signal-bar context (extension, volume ratio).
+        sig_day = t.signal_candle_time.normalize()
+        entry_ext_atr = ""
+        vol_ratio = ""
+        if t.signal_candle_time in sym_indexed.index:
+            sig = sym_indexed.loc[t.signal_candle_time]
+            if not pd.isna(sig["ema_50"]) and t.atr_at_signal > 0:
+                ext = (t.entry_price - sig["ema_50"]) if t.side == "long" \
+                    else (sig["ema_50"] - t.entry_price)
+                entry_ext_atr = round(ext / t.atr_at_signal, 3)
+            if not pd.isna(sig["volume_avg_20"]) and sig["volume_avg_20"] > 0:
+                vol_ratio = round(sig["volume"] / sig["volume_avg_20"], 3)
+
+        # Relative-strength rank at entry (1 = strongest), same row the sim used.
+        rs_rank = ""
+        if sig_day in rs_by_day.index:
+            rs_row = rs_by_day.loc[sig_day].dropna()
+            if t.symbol in rs_row.index:
+                rs_rank = int(rs_row.rank(ascending=False)[t.symbol])
+
+        rows.append({
+            "symbol": t.symbol,
+            "side": t.side,
+            "entry_time": t.entry_time.isoformat(),
+            "exit_time": t.exit_time.isoformat() if t.exit_time is not None else "",
+            "exit_reason": t.exit_reason,
+            "entry_price": round(t.entry_price, 6),
+            "exit_price_final": round(t.exit_price_final, 6) if t.exit_price_final else "",
+            "gross_pnl_usd": round(t.gross_pnl_usd, 4),
+            "net_pnl_usd": round(t.net_pnl_usd, 4),
+            "fees_usd": round(t.fees_usd, 4),
+            "slippage_usd": round(t.slippage_usd, 4),
+            "funding_usd": round(t.funding_usd, 4),
+            "r_multiple": round(t.r_multiple, 3),
+            "cost_R": round(cost_r, 3),
+            "bars_held": t.bars_held,
+            "MFE_R": round(mfe_r, 3),
+            "MAE_R": round(mae_r, 3),
+            "bars_to_MFE": b_mfe,
+            "bars_to_MAE": b_mae,
+            "btc_regime_at_entry": t.regime_state,
+            "rs_rank_at_entry": rs_rank,
+            "entry_ext_atr": entry_ext_atr,
+            "volume_ratio_at_entry": vol_ratio,
+            "loss_category": "|".join(_classify_loss(t, mfe_r, mae_r)),
+        })
+    return rows
+
+
+def export_loss_autopsy_csv(rows, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fieldnames = [
+        "symbol", "side", "entry_time", "exit_time", "exit_reason",
+        "entry_price", "exit_price_final", "gross_pnl_usd", "net_pnl_usd",
+        "fees_usd", "slippage_usd", "funding_usd", "r_multiple", "cost_R",
+        "bars_held", "MFE_R", "MAE_R", "bars_to_MFE", "bars_to_MAE",
+        "btc_regime_at_entry", "rs_rank_at_entry", "entry_ext_atr",
+        "volume_ratio_at_entry", "loss_category",
+    ]
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for r in rows:
+            writer.writerow(r)
+    print(f"Exported {len(rows)} losing trades to {path}")
+
+
+def print_loss_autopsy_summary(rows):
+    print("\n" + "=" * 70)
+    print("LOSS AUTOPSY SUMMARY (analysis only — does not change the strategy)")
+    print("=" * 70)
+    if not rows:
+        print("  No losing trades to autopsy.")
+        return
+    n = len(rows)
+    total_net = sum(r["net_pnl_usd"] for r in rows)
+    print(f"  Losing trades: {n}   Total net P&L: ${total_net:+.2f}")
+
+    def _grouped(key_fn, title):
+        groups = {}
+        for r in rows:
+            groups.setdefault(key_fn(r), []).append(r)
+        print(f"\n  {title}")
+        for key in sorted(groups, key=lambda k: str(k)):
+            g = groups[key]
+            net = sum(x["net_pnl_usd"] for x in g)
+            avg_r = sum(x["r_multiple"] for x in g) / len(g)
+            print(f"    {str(key):<16} count={len(g):<3} avgR={avg_r:+.2f}  net=${net:+.2f}")
+
+    # By category (multi-label: a trade appears under each of its labels).
+    cat_groups = {}
+    for r in rows:
+        for lab in (r["loss_category"].split("|") if r["loss_category"] else ["(unlabeled)"]):
+            cat_groups.setdefault(lab, []).append(r)
+    print("\n  By loss_category (multi-label; trades may appear in several)")
+    for cat in sorted(cat_groups, key=lambda c: -len(cat_groups[c])):
+        g = cat_groups[cat]
+        net = sum(x["net_pnl_usd"] for x in g)
+        avg_r = sum(x["r_multiple"] for x in g) / len(g)
+        print(f"    {cat:<22} count={len(g):<3} avgR={avg_r:+.2f}  net=${net:+.2f}")
+
+    _grouped(lambda r: r["symbol"], "By symbol")
+    _grouped(lambda r: r["side"], "By side")
+    _grouped(lambda r: r["exit_reason"], "By exit_reason")
+    _grouped(lambda r: r["btc_regime_at_entry"], "By BTC regime at entry")
+
+    # MFE reach distribution before failing.
+    print("\n  Losers that reached a favorable excursion before failing")
+    for thresh in (0.5, 1.0, 1.5):
+        hit = sum(1 for r in rows if r["MFE_R"] >= thresh)
+        print(f"    reached +{thresh:>3}R MFE: {hit}/{n} ({hit / n * 100:.0f}%)")
+
+
 def report_summary(trades, equity_curve):
     if not trades:
         print("\nNo trades executed in this period. "
@@ -975,9 +1183,12 @@ def main(argv=None):
 
     export_trades_csv(trades, TRADES_CSV)
     export_equity_csv(equity_curve, EQUITY_CSV)
+    autopsy_rows = build_loss_autopsy(trades, data)
+    export_loss_autopsy_csv(autopsy_rows, LOSS_AUTOPSY_CSV)
     report_summary(trades, equity_curve)
     lines, _ = gate_report(trades, equity_curve, data)
     print("\n".join(lines))
+    print_loss_autopsy_summary(autopsy_rows)
 
 
 if __name__ == "__main__":
