@@ -24,3 +24,4 @@ Thumbs.db
 .env
 *.env
 !*.env.example
+backtest_output_4h/
