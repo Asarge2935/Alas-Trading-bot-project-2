@@ -1135,6 +1135,64 @@ def gate_report(trades, equity_curve, data_by_symbol):
 
 
 # ---------------------------------------------------------------------------
+# Regime comparison helper (default vs --strict-regime). ANALYSIS ONLY.
+# ---------------------------------------------------------------------------
+
+def _regime_run_metrics(data_by_symbol, strict):
+    """Run one backtest and collapse it to the comparison metrics."""
+    trades, eq = run_backtest(data_by_symbol, strict_regime=strict)
+    rows = build_loss_autopsy(trades, data_by_symbol)
+    if trades:
+        wins = sum(t.net_pnl_usd for t in trades if t.net_pnl_usd > 0)
+        loss = abs(sum(t.net_pnl_usd for t in trades if t.net_pnl_usd <= 0))
+        pf = wins / loss if loss > 0 else float("inf")
+        avg_r = float(np.mean([t.r_multiple for t in trades]))
+        net = sum(t.net_pnl_usd for t in trades)
+    else:
+        pf, avg_r, net = float("nan"), float("nan"), 0.0
+    cat = lambda name: sum(1 for r in rows if name in r["loss_category"])
+    return {
+        "trades": len(trades), "pf": pf, "avg_r": avg_r, "net": net,
+        "max_dd": max((p["drawdown_pct"] for p in eq), default=0.0),
+        "rat": cat("regime_against_trade"), "chop": cat("regime_chop_loss"),
+    }
+
+
+def compare_regime(data_by_symbol):
+    """Print a side-by-side DEFAULT vs --strict-regime table on shared data."""
+    print("\nRunning DEFAULT vs --strict-regime comparison (same candles) ...")
+    d = _regime_run_metrics(data_by_symbol, strict=False)
+    s = _regime_run_metrics(data_by_symbol, strict=True)
+
+    def num(x, pos=False):
+        if x != x:                      # NaN
+            return "n/a"
+        if x == float("inf"):
+            return "inf"
+        return f"{x:+.2f}" if pos else f"{x:.2f}"
+
+    rows = [
+        ("Trades", str(d["trades"]), str(s["trades"])),
+        ("Profit factor", num(d["pf"]), num(s["pf"])),
+        ("Avg R", num(d["avg_r"], pos=True), num(s["avg_r"], pos=True)),
+        ("Net P&L $", num(d["net"], pos=True), num(s["net"], pos=True)),
+        ("Max DD %", num(d["max_dd"]), num(s["max_dd"])),
+        ("regime_against_trade losses", str(d["rat"]), str(s["rat"])),
+        ("regime_chop_loss losses", str(d["chop"]), str(s["chop"])),
+    ]
+    print("\n" + "=" * 66)
+    print("REGIME COMPARISON  (default = canonical; strict = experimental)")
+    print("=" * 66)
+    print(f"{'Metric':<30}{'Default':>16}{'--strict-regime':>18}")
+    print("-" * 66)
+    for label, a, b in rows:
+        print(f"{label:<30}{a:>16}{b:>18}")
+    print("-" * 66)
+    print("Strict is opt-in/experimental. If a column shows <30 trades, its "
+          "PF / Avg R are not yet reliable (spec §9 gate).")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1153,6 +1211,9 @@ def main(argv=None):
                    help="EXPERIMENTAL: stricter BTC daily master filter "
                         "(risk_on: close>EMA50*1.02 & slope>0; "
                         "risk_off: close<EMA50*0.98 & slope<0; else neutral).")
+    p.add_argument("--compare-regime", action="store_true",
+                   help="Run DEFAULT vs --strict-regime on the same data and "
+                        "print a side-by-side metrics table (no CSV export).")
     args = p.parse_args(argv)
     days_back = args.days
 
@@ -1192,6 +1253,10 @@ def main(argv=None):
 
     if "BTC-USD" not in data:
         print("ERROR: BTC-USD data is required for the regime filter — aborting.")
+        return
+
+    if args.compare_regime:
+        compare_regime(data)
         return
 
     print("\nRunning scanner backtest...")
