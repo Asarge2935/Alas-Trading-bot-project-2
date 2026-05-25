@@ -59,6 +59,9 @@ def main():
     p.add_argument("--setup-type", default=None,
                    help="optional: filter to one setup_type (e.g. breakout, "
                         "pullback_continuation) if the column exists")
+    p.add_argument("--label", default=None,
+                   help="optional header label, e.g. 'STANDALONE breakout' vs "
+                        "'COMBINED attribution: breakout'")
     args = p.parse_args()
 
     trades_path = os.path.join(args.dir, "trades.csv")
@@ -76,8 +79,9 @@ def main():
         df = df[df["setup_type"] == args.setup_type]
         setup_label = f"setup_type={args.setup_type}"
     df = df.sort_values("entry_time").reset_index(drop=True)
+    header = args.label if args.label else f"{args.symbol} {args.side}-only, {setup_label}"
     print("=" * 78)
-    print(f"ETH ROBUSTNESS REPORT — {args.symbol} {args.side}-only, {setup_label} "
+    print(f"ETH ROBUSTNESS REPORT — {header} "
           f"({len(df)} of {total} trades in trades.csv)")
     print("=" * 78)
     if df.empty:
@@ -129,8 +133,14 @@ def main():
     if os.path.exists(la_path):
         la = pd.read_csv(la_path)
         la = la[(la["symbol"] == args.symbol) & (la["side"] == args.side)]
+        if args.setup_type:
+            if "setup_type" in la.columns:
+                la = la[la["setup_type"] == args.setup_type]
+            else:
+                print("  WARNING: loss_autopsy.csv has no setup_type column — "
+                      "cannot filter losers by setup; showing all.")
         if la.empty:
-            print("  No ETH losers in loss_autopsy.csv.")
+            print("  No matching ETH losers in loss_autopsy.csv.")
         else:
             print(la[["entry_time", "exit_reason", "r_multiple", "MFE_R", "MAE_R",
                       "bars_held"]].to_string(index=False))

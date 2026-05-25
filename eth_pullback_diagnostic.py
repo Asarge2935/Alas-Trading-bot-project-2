@@ -21,9 +21,13 @@ touched. Pullback entry conditions are defined in backtest.evaluate_pullback.
 Run:
     python3 eth_pullback_diagnostic.py [--days N]
 
-Outputs (combined run, separate dir):
-    backtest_output_pullback/{trades,equity_curve,loss_autopsy,regime_behavior_report}.csv
-    + console 3-way report + robustness_report.py per setup_type.
+Outputs (separate dirs so attribution is unambiguous):
+    backtest_output_pullback/combined/{trades,equity_curve,loss_autopsy,
+                                       regime_behavior_report}.csv   (setup="both")
+    backtest_output_pullback/standalone_breakout/{trades,loss_autopsy}.csv
+    backtest_output_pullback/standalone_pullback/{trades,loss_autopsy}.csv
+    + console 3-way report, count reconciliation, and five labeled robustness
+      reports (2 standalone, combined-all, 2 combined-run attributions).
 """
 
 import argparse
@@ -164,29 +168,77 @@ def main():
     tc, eqc = bt.run_backtest(data, setup="both", **ETH_ARGS)
     print(f"breakout-only: {len(tb)} | pullback-only: {len(tp)} | combined: {len(tc)}")
 
+    autopsy_c = bt.build_loss_autopsy(tc, data)
     mb = _metrics(tb, eqb, bt.build_loss_autopsy(tb, data))
     mp = _metrics(tp, eqp, bt.build_loss_autopsy(tp, data))
-    autopsy_c = bt.build_loss_autopsy(tc, data)
     mc = _metrics(tc, eqc, autopsy_c)
     print_three_way(mb, mp, mc)
+    _print_count_reconciliation(tb, tp, tc)
 
-    # Combined-run outputs (trades.csv carries setup_type for every trade).
-    os.makedirs(OUT_DIR, exist_ok=True)
-    bt.export_trades_csv(tc, os.path.join(OUT_DIR, "trades.csv"))
-    bt.export_equity_csv(eqc, os.path.join(OUT_DIR, "equity_curve.csv"))
-    bt.export_loss_autopsy_csv(autopsy_c, os.path.join(OUT_DIR, "loss_autopsy.csv"))
+    # Write three independent trade sets so robustness can attribute correctly.
+    # STANDALONE dirs: every trade in them is that one setup. COMBINED dir: the
+    # "both" run, where breakout has priority and the two setups compete for the
+    # single position slot (so per-setup counts here differ from standalone).
+    combined_dir = os.path.join(OUT_DIR, "combined")
+    sb_dir = os.path.join(OUT_DIR, "standalone_breakout")
+    sp_dir = os.path.join(OUT_DIR, "standalone_pullback")
+    for d in (combined_dir, sb_dir, sp_dir):
+        os.makedirs(d, exist_ok=True)
+        for stale in ("trades.csv", "loss_autopsy.csv"):  # avoid reusing a prior run's file
+            fp = os.path.join(d, stale)
+            if os.path.exists(fp):
+                os.remove(fp)
+    # Combined outputs (trades.csv carries setup_type for every trade).
+    bt.export_trades_csv(tc, os.path.join(combined_dir, "trades.csv"))
+    bt.export_equity_csv(eqc, os.path.join(combined_dir, "equity_curve.csv"))
+    bt.export_loss_autopsy_csv(autopsy_c, os.path.join(combined_dir, "loss_autopsy.csv"))
     bt.export_regime_behavior_csv(bt.build_regime_behavior_report(tc, data),
-                                  os.path.join(OUT_DIR, "regime_behavior_report.csv"))
+                                  os.path.join(combined_dir, "regime_behavior_report.csv"))
+    # Standalone outputs (trades + losers needed by robustness_report).
+    bt.export_trades_csv(tb, os.path.join(sb_dir, "trades.csv"))
+    bt.export_loss_autopsy_csv(bt.build_loss_autopsy(tb, data), os.path.join(sb_dir, "loss_autopsy.csv"))
+    bt.export_trades_csv(tp, os.path.join(sp_dir, "trades.csv"))
+    bt.export_loss_autopsy_csv(bt.build_loss_autopsy(tp, data), os.path.join(sp_dir, "loss_autopsy.csv"))
 
-    print("\n=== robustness report by setup_type ===")
-    if tc:
-        for st in (None, "breakout", "pullback_continuation"):
-            cmd = [sys.executable, "robustness_report.py", "--dir", OUT_DIR]
-            if st:
-                cmd += ["--setup-type", st]
-            subprocess.run(cmd, check=False)
-    else:
-        print("No combined trades — skipping robustness report.")
+    # Five clearly-labeled robustness reports: 2 standalone, combined-all, and
+    # 2 combined-run attributions (filtered by actual setup_type).
+    runs = [
+        (sb_dir, None, "STANDALONE breakout run"),
+        (sp_dir, None, "STANDALONE pullback run"),
+        (combined_dir, None, "COMBINED run (all setups)"),
+        (combined_dir, "breakout", "COMBINED-run attribution: breakout"),
+        (combined_dir, "pullback_continuation", "COMBINED-run attribution: pullback_continuation"),
+    ]
+    print("\n=== robustness reports (standalone vs combined attribution) ===")
+    for d, st, label in runs:
+        if not os.path.exists(os.path.join(d, "trades.csv")):
+            print("=" * 78)
+            print(f"ETH ROBUSTNESS REPORT — {label}: 0 trades (no file written). Skipped.")
+            continue
+        cmd = [sys.executable, "robustness_report.py", "--dir", d, "--label", label]
+        if st:
+            cmd += ["--setup-type", st]
+        subprocess.run(cmd, check=False)
+
+
+def _print_count_reconciliation(tb, tp, tc):
+    from collections import Counter
+    by = Counter(t.setup_type for t in tc)
+    cb, cp = by.get("breakout", 0), by.get("pullback_continuation", 0)
+    print("\n" + "-" * 82)
+    print("COUNT RECONCILIATION (why standalone != combined-attribution)")
+    print("-" * 82)
+    print(f"  standalone breakout : {len(tb):>3}   |  in COMBINED run: {cb:>3}  "
+          f"(blocked: {len(tb) - cb})")
+    print(f"  standalone pullback : {len(tp):>3}   |  in COMBINED run: {cp:>3}  "
+          f"(blocked: {len(tp) - cp})")
+    print(f"  combined total      : {len(tc):>3}   ({cb} breakout + {cp} pullback_continuation)")
+    print("  CAUSE: not a bug. The combined ('both') run holds MAX_OPEN_POSITIONS=1")
+    print("  and gives BREAKOUT priority, so the two setups compete for the single")
+    print("  slot: a position open from one setup blocks signals from the other,")
+    print("  and on a bar where both fire, breakout wins. Hence combined-attribution")
+    print(f"  counts ({cb}/{cp}) differ from standalone counts ({len(tb)}/{len(tp)}), and")
+    print(f"  combined total ({len(tc)}) != standalone sum ({len(tb) + len(tp)}).")
 
 
 if __name__ == "__main__":
