@@ -38,6 +38,38 @@ Asset character (current working models, both unvalidated):
 
 ---
 
+## 0.1 Validation Data Expansion Phase (current)
+
+The bottleneck is no longer strategy invention — it is **insufficient
+independent validation depth.** This phase tests **structural persistence
+across more independent data**, not better-looking metrics.
+
+- **ETH** needs **independent validation data**, not more feature stacking.
+- **BTC** needs **independent validation data**, not more strategy variants.
+- **Next milestone:** the same behavior persisting across **more data sources
+  and instruments** (e.g. Coinbase/Binance/Kraken ETH spot, BTC spot, and — if
+  available — perpetual candles), validated via CSV import.
+
+**Metrics to compare across each new dataset** (behavior, not just PF):
+trade count · winner count · ex-best behavior · top-trade concentration ·
+top-3 concentration · best-month concentration · OOS preservation · regime
+consistency · **ETH failure-to-separate** behavior · **BTC full-compression**
+behavior.
+
+**Rules for this phase:**
+- Do **not** advance a model because PF improves on one new dataset.
+- Treat a higher PF as **descriptive only** unless robustness, distribution,
+  and the sample/winner gates *also* improve.
+- No new filters, no timeframe optimization, no weekly, no weakening setup
+  quality to create more occurrences.
+
+Tooling: `data_source_feasibility_audit.py` (what data expansion is possible),
+`ohlcv_csv_validation_harness.py` (generic CSV loader/resampler),
+`eth_independent_data_validation.py`, `btc_independent_data_validation.py`
+(run the existing diagnostics against built-in or user-supplied CSV data).
+
+---
+
 ## 1. Rejected (evidence-based, this phase)
 
 | What | Why rejected |

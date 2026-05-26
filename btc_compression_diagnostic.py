@@ -87,10 +87,11 @@ def _aggregate(df, freq):
     return agg[["time", "low", "high", "open", "close", "volume"]]
 
 
-def _build_btc_df(entry_seconds, fetch_gran, agg_freq, days):
-    raw = bt.load_candles("BTC-USD", fetch_gran, days)
-    if agg_freq:
-        raw = _aggregate(raw, agg_freq)
+def compression_indicators(raw, entry_seconds):
+    """Drop incomplete candles and attach the compression-breakout indicators
+    (EMA50/ATR14/20-bar levels via add_indicators, EMA200, and the prior-bar
+    compression flags). Shared by the fetch path and the CSV-validation path so
+    both use IDENTICAL logic."""
     df = bt.add_indicators(bt.drop_incomplete_candles(raw, entry_seconds))
     df["ema_200"] = df["close"].ewm(span=BTC_EMA_LONG, adjust=False).mean()
 
@@ -115,6 +116,13 @@ def _build_btc_df(entry_seconds, fetch_gran, agg_freq, days):
                              + df["comp_range_prev"].astype(int)
                              + df["comp_bb_prev"].astype(int))
     return df
+
+
+def _build_btc_df(entry_seconds, fetch_gran, agg_freq, days):
+    raw = bt.load_candles("BTC-USD", fetch_gran, days)
+    if agg_freq:
+        raw = _aggregate(raw, agg_freq)
+    return compression_indicators(raw, entry_seconds)
 
 
 def daily_htf_features(df):
