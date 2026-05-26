@@ -63,6 +63,19 @@ behavior.
 - No new filters, no timeframe optimization, no weekly, no weakening setup
   quality to create more occurrences.
 
+**First independent-data run — Binance spot, ~6.3 years (2020-01 .. 2026-04):**
+- **ETH 6H strict breakout: robustness did NOT persist.** Ex-best PF fell
+  1.55 → **0.97** and ex-best net went **negative** (one-trade-dependent; top
+  trade = 110% of net). The *strategy P&L* is fragile across sources, but the
+  *failure-to-separate behavior* replicated (fast +1.04R/88% vs slow
+  −0.65R/12%). See §2.
+- **BTC 12H full-compression: behavior persisted, rarity is fatal.** Shape held
+  (ex-best PF 2.35, OOS PF 4.31 > IS 2.54, top 35%), but only **15 trades over
+  6.3y** — independent + longer data did **not** fix the structural rarity. See
+  §4.1.1.
+- **Net: nothing deployable; validation caught real fragility (ETH) and an
+  irreducible sample ceiling (BTC) that a PF-only view would have missed.**
+
 Tooling: `data_source_feasibility_audit.py` (what data expansion is possible),
 `ohlcv_csv_validation_harness.py` (generic CSV loader/resampler),
 `eth_independent_data_validation.py`, `btc_independent_data_validation.py`
@@ -167,6 +180,25 @@ Interpretation:
   - **Most useful clue — "failure to separate":** winners reached **+0.5R
     before meaningful (0.5R) MAE in 6/8** cases; losers in **0/5**. This is
     **hypothesis-generating only — do NOT convert it into a trading rule yet.**
+
+  **Independent-data result (Binance ETHUSDT spot, ~6.3y; `eth_independent_data_validation.py`,
+  label binance_eth_spot) — robustness did NOT persist:**
+  - 16 trades, 8 winners. PF **2.13 → 1.33**, avg R **+0.504 → +0.198** (at the
+    gate edge).
+  - **Ex-best PF 1.55 → 0.97 and ex-best net = −$1.52.** Top trade = **110% of
+    net** → remove the single best trade and the strategy is **net-negative**.
+    The ETH strict-breakout strategy **FAILED the ex-best robustness check** on
+    independent data — it is one-trade-dependent, weaker not stronger.
+  - Year-inconsistent: 2024 −$10.4 (PF 0.54) vs 2025 +$30.5 (PF 2.77).
+  - **BUT the failure-to-separate signature DID replicate independently:** fast
+    starters (+0.5R within 2 bars) avg R **+1.04 / 88% win**; slow starters
+    **−0.65 / 12% win**; winners reached +0.5R-before-MAE **6/8**, losers
+    **1/8**. *Caveat:* "fast starter" is measured AFTER entry → it explains
+    win/loss, it is **not** a tradeable filter (no look-ahead edge).
+  - Caveat: only ETH came from Binance; BTC/SOL regime/RS context still came
+    from the built-in Coinbase cache (not fully independent).
+  - **Takeaway: the ETH *strategy P&L* is fragile/one-trade-dependent across
+    sources; the *behavioral phenomenon* persists. Still NOT deployable.**
 
 ## 3. Current hypothesis
 
@@ -304,6 +336,22 @@ descriptive only**): 21 trades, 9 winners / 12 losers.
   dependent.
 - BTC compression stays a **volatility-release research lead**, not a
   trend-continuation model. BTC pullback stays **rejected**.
+
+**Independent-data result (Binance BTCUSDT spot, ~6.3y; `btc_independent_data_validation.py`,
+label binance_btc_spot) — behavior persisted, rarity is the blocker:**
+- 12H full-compression: **15 trades** (9 winners) over 6.3 years, PF 3.09,
+  avg R +0.26, ex-best PF **2.35**, top trade **35.3%**, **OOS PF 4.31 > IS PF
+  2.54**, losers MFE 0.19R / MAE 0.48R. The *shape* (ex-best holds, OOS exceeds
+  IS, low concentration, controlled losers) is **consistent with Coinbase** —
+  the behavior replicated across two independent exchanges.
+- **Decisive finding:** even with an independent source AND ~2 extra years,
+  full-compression still yields only **15 trades (~2.4/yr)** — it **fails the
+  ≥30-trade and ≥12–15-winner gates**. **More/longer/independent data did NOT
+  fix the rarity; the rarity is STRUCTURAL.** Net ≈ $19 on a $500 account over
+  6 years — economically marginal regardless.
+- 1D full-compression: 3 trades (ex-best PF 0.00) — too thin to read.
+- **Takeaway: behaviorally validated, but likely UN-validatable at 12H because
+  the occurrence rate is irreducibly low. Not deployable. Not a tuning problem.**
 
 **BTC strategy-complexity work is PAUSED (see §0).** No new BTC variants,
 filters, or exits. The 12H full-compression result (9 trades, 6 winners) is
