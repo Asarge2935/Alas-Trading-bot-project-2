@@ -35,3 +35,5 @@ backtest_output_btc_htf_alignment/
 backtest_output_btc_full_compression/
 backtest_output_eth_quality_v2/
 backtest_output_btc_compression_next/
+backtest_output_eth_stability/
+backtest_output_btc_compression_feasibility/

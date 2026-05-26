@@ -75,6 +75,16 @@ Interpretation:
   - volatility / chop state (ATR ratio, range compression)
   - early-failure behavior (did adverse move come before any favorable move)
 
+  **Latest audit (`eth_quality_audit_v2.py`) — still NOT deployable:**
+  - 13 trades, **8 winners** (fails ≥30 trades and ≥12–15 winners gates).
+  - Concentration warnings: top trade = **51.6%** of net, best month = **51.6%**
+    of net, top-3 trades = **131.8%** of net.
+  - Best *relative* profile of any model: PF 2.13, avg R +0.504, **ex-best PF
+    1.55**, ex-best avg R +0.263, and **OOS PF > IS PF**.
+  - **Most useful clue — "failure to separate":** winners reached **+0.5R
+    before meaningful (0.5R) MAE in 6/8** cases; losers in **0/5**. This is
+    **hypothesis-generating only — do NOT convert it into a trading rule yet.**
+
 ## 3. Current hypothesis
 
 > ETH long breakout has an edge **only** under specific regime + relative-strength
@@ -199,6 +209,18 @@ descriptive only**): 21 trades, 9 winners / 12 losers.
    `btc_compression_next_diagnostic.py`. One rule only; do not compare many exits.
 3. **Liquidity sweep + reclaim** (later) — separate structural hypothesis.
 4. **Perp data (later)** — funding rate, OI delta, liquidation clusters.
+
+**Latest results (`btc_compression_next_diagnostic.py`) — none deployable:**
+- **Full compression only (comp_count == 3):** cleaner shape (9 trades, 6
+  winners, PF 6.49, ex-best PF 4.41, top trade 37.9%) — but **extremely
+  under-sampled. Promising as a HYPOTHESIS only, not proof.**
+- **Baseline + early-failure exit** (exit on close back inside the prior
+  compression range) **improved shape:** PF 1.50 → **1.88**, net +$14.15 →
+  **+$19.91**, ex-best PF 1.04 → **1.31**, losers' MAE 0.56R → **0.34R**. Still
+  **NOT deployable:** 21 trades, **8 winners**, month-dependent, top-trade
+  dependent.
+- BTC compression stays a **volatility-release research lead**, not a
+  trend-continuation model. BTC pullback stays **rejected**.
 
 ## 5. Deployment gates / global validation rules (must ALL pass on real data)
 

@@ -173,9 +173,14 @@ def print_comparison(m_by_v):
         ("Losers >=+0.5R", lambda m: f"{m.get('mfe_05', 0)}/{m.get('loss_n', 0)}"),
         ("Losers >=+1.0R", lambda m: f"{m.get('mfe_10', 0)}/{m.get('loss_n', 0)}"),
     ]
-    w = 26
-    print(f"{'Metric':<22}" + "".join(f"{lab[:w]:>{w}}" for lab in labels))
-    print("-" * 100)
+    w = 14
+    short = {"baseline": "base", "full_compression_only": "full",
+             "baseline_early_failure_exit": "base+exit",
+             "full_compression_early_failure_exit": "full+exit"}
+    disp = {lab: short.get(lab, lab)[:w - 1] for lab in labels}
+    print("  legend: " + " | ".join(f"{disp[l]}={l}" for l in labels))
+    print(f"{'Metric':<22}" + "".join(f"{disp[lab]:>{w}}" for lab in labels))
+    print("-" * (22 + w * len(labels)))
     for label, fn in rows:
         print(f"{label:<22}" + "".join(f"{fn(m_by_v[lab]):>{w}}" for lab in labels))
     print("\nPerformance by year (net $ | PF | n):")
