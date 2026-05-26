@@ -88,6 +88,38 @@ def _download_month(market, symbol, interval, ym):
     return df, None
 
 
+def _detect_unit(median_abs):
+    """Detect epoch unit from open_time magnitude (Binance Vision has shipped
+    seconds, ms, and more recently MICROSECONDS)."""
+    if median_abs > 1e17:
+        return "ns"
+    if median_abs > 1e14:
+        return "us"
+    if median_abs > 1e11:
+        return "ms"
+    return "s"
+
+
+def open_time_to_utc(open_time):
+    """Convert a Binance open_time column to UTC timestamps with robust unit
+    detection. Returns (timestamps, unit). Raises SystemExit on impossible
+    values (so a misdetected unit fails clearly instead of writing garbage)."""
+    v = pd.to_numeric(open_time, errors="coerce")
+    if v.isna().any():
+        raise SystemExit("ERROR: non-numeric open_time values in downloaded klines.")
+    v = v.astype("int64")
+    unit = _detect_unit(float(v.abs().median()))
+    try:
+        ts = pd.to_datetime(v, unit=unit, utc=True)
+    except Exception as e:
+        raise SystemExit(f"ERROR: could not parse open_time as {unit}: {e}")
+    yr_min, yr_max = int(ts.dt.year.min()), int(ts.dt.year.max())
+    if yr_min < 2009 or yr_max > 2100:
+        raise SystemExit(f"ERROR: timestamp unit detection failed (unit='{unit}' -> "
+                         f"years {yr_min}..{yr_max}). Refusing to write impossible timestamps.")
+    return ts, unit
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     p.add_argument("--symbol", required=True)
@@ -96,44 +128,76 @@ def main():
     p.add_argument("--end", required=True, help="YYYY-MM")
     p.add_argument("--market", default="spot", choices=["spot", "futures"])
     p.add_argument("--output", required=True)
+    p.add_argument("--allow-missing", action="store_true",
+                   help="permit missing HISTORICAL (non-trailing) months instead of failing")
     args = p.parse_args()
 
     months = _months(args.start, args.end)
     print(f"Binance Vision {args.market} {args.symbol} {args.interval}: "
           f"{len(months)} months {args.start}..{args.end}")
-    frames, missing = [], []
-    for ym in months:
+    frames, ok_months, missing_idx = [], [], []
+    for i, ym in enumerate(months):
         df, err = _download_month(args.market, args.symbol, args.interval, ym)
         if err:
-            missing.append(err)
+            missing_idx.append(i)
             print(f"  MISSING {err}")
         else:
             frames.append(df)
+            ok_months.append(ym)
             print(f"  ok {ym}: {len(df)} rows")
     if not frames:
         print("ERROR: no monthly files downloaded. Check symbol/interval/dates. "
               "Binance Vision may not have the current partial month or very early months.")
         sys.exit(1)
 
+    # Classify missing months: trailing (after the last success) vs historical gaps.
+    last_ok = max(i for i, ym in enumerate(months) if ym in ok_months)
+    trailing_missing = [months[i] for i in missing_idx if i > last_ok]
+    historical_missing = [months[i] for i in missing_idx if i < last_ok]
+    if historical_missing and not args.allow_missing:
+        print(f"\nERROR: {len(historical_missing)} HISTORICAL month(s) missing "
+              f"(gaps before the last available month): {historical_missing}. "
+              f"Refusing to write a file with silent gaps. Re-run with --allow-missing "
+              f"if you accept the gaps, or adjust --start/--end.")
+        sys.exit(1)
+
     allk = pd.concat(frames, ignore_index=True)
+    ts, unit = open_time_to_utc(allk["open_time"])
     out = pd.DataFrame({
-        "timestamp": pd.to_datetime(allk["open_time"].astype("int64"),
-                                    unit="ms" if allk["open_time"].astype("int64").median() > 1e12 else "s",
-                                    utc=True),
+        "timestamp": ts,
         "open": allk["open"].astype(float), "high": allk["high"].astype(float),
         "low": allk["low"].astype(float), "close": allk["close"].astype(float),
         "volume": allk["volume"].astype(float),
-    }).sort_values("timestamp").drop_duplicates("timestamp", keep="first").reset_index(drop=True)
+    })
+    if out[["open", "high", "low", "close", "volume"]].isna().any().any():
+        print("ERROR: missing/non-numeric OHLCV in downloaded klines — not forward-filling.")
+        sys.exit(1)
+    out = out.sort_values("timestamp")
+    dups = int(out["timestamp"].duplicated().sum())
+    if dups:
+        print(f"WARNING: {dups} duplicate timestamps dropped (kept first).")
+        out = out.drop_duplicates("timestamp", keep="first")
+    out = out.reset_index(drop=True)
 
     written = out.copy()
     written["timestamp"] = written["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     os.makedirs(os.path.dirname(os.path.abspath(args.output)) or ".", exist_ok=True)
     written.to_csv(args.output, index=False)
-    print(f"\nWrote {args.output}: {len(out)} rows  "
-          f"{out['timestamp'].min()} -> {out['timestamp'].max()}")
-    if missing:
-        print(f"NOTE: {len(missing)} month(s) missing (listed above) — coverage has gaps; "
-              f"NOT forward-filled.")
+
+    print("\n" + "-" * 60)
+    print(f"  source            : Binance Vision ({args.market})")
+    print(f"  symbol            : {args.symbol}")
+    print(f"  interval          : {args.interval}")
+    print(f"  rows              : {len(out)}")
+    print(f"  detected ts unit  : {unit}")
+    print(f"  start timestamp   : {out['timestamp'].min()}")
+    print(f"  end timestamp     : {out['timestamp'].max()}")
+    print(f"  skipped trailing  : {len(trailing_missing)}"
+          + (f" ({trailing_missing})" if trailing_missing else ""))
+    if historical_missing:
+        print(f"  historical gaps   : {len(historical_missing)} (allowed via --allow-missing; NOT filled)")
+    print(f"  output            : {args.output}")
+    print("-" * 60)
     print(f"Next: python3 ohlcv_csv_validation_harness.py --csv {args.output} --resample 6h")
 
 
