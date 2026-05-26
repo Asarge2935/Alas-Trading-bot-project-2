@@ -44,21 +44,32 @@ def _built_in_6h(days):
     return out
 
 
-def build(days, csv_path, label):
+def _csv_6h(path):
+    raw, errs = load_ohlcv_csv(path)
+    df = bt.add_indicators(bt.drop_incomplete_candles(resample_ohlcv(raw, "6h"), bt.TIMEFRAME_SECONDS))
+    return df, errs
+
+
+def build(days, csv_path, label, btc_csv=None, sol_csv=None):
     note = ""
     if csv_path:
-        raw, errs = load_ohlcv_csv(csv_path)
-        eth_6h = resample_ohlcv(raw, "6h")
-        eth = bt.add_indicators(bt.drop_incomplete_candles(eth_6h, bt.TIMEFRAME_SECONDS))
-        # cross-asset context from current provider:
-        ctx = {}
-        for sym in ("BTC-USD", "SOL-USD"):
-            df = bt.load_candles(sym, bt.TIMEFRAME_SECONDS, days)
-            ctx[sym] = bt.add_indicators(bt.drop_incomplete_candles(df, bt.TIMEFRAME_SECONDS))
+        eth, errs = _csv_6h(csv_path)
+        ctx, srcs = {}, {}
+        for sym, cpath in (("BTC-USD", btc_csv), ("SOL-USD", sol_csv)):
+            if cpath:
+                ctx[sym], _ = _csv_6h(cpath)
+                srcs[sym] = "CSV"
+            else:
+                df = bt.load_candles(sym, bt.TIMEFRAME_SECONDS, days)
+                ctx[sym] = bt.add_indicators(bt.drop_incomplete_candles(df, bt.TIMEFRAME_SECONDS))
+                srcs[sym] = "built-in"
         data = {"BTC-USD": ctx["BTC-USD"], "ETH-USD": eth, "SOL-USD": ctx["SOL-USD"]}
-        note = (f"CSV mode ({label}): ETH from CSV ({len(eth)} 6H bars after resample); "
-                f"BTC/SOL from built-in provider; simulated on time-intersection. "
-                + ("CSV warnings: " + "; ".join(errs) if errs else "no CSV warnings."))
+        fully = srcs["BTC-USD"] == "CSV" and srcs["SOL-USD"] == "CSV"
+        note = (f"CSV mode ({label}): ETH from CSV ({len(eth)} 6H bars); "
+                f"BTC={srcs['BTC-USD']}, SOL={srcs['SOL-USD']}; simulated on time-intersection. "
+                + ("** FULLY INDEPENDENT (all three from CSV) **. "
+                   if fully else "** PARTIALLY independent (regime/RS context not all CSV) **. ")
+                + ("ETH CSV warnings: " + "; ".join(errs) if errs else "no ETH CSV warnings."))
     else:
         data = _built_in_6h(days)
         note = "built-in mode: BTC/ETH/SOL from current provider."
@@ -151,10 +162,13 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     p.add_argument("--days", type=int, default=bt.DAYS_BACK)
     p.add_argument("--csv", default=None)
+    p.add_argument("--btc-csv", default=None, help="optional Binance/other BTC CSV for FULLY independent regime context")
+    p.add_argument("--sol-csv", default=None, help="optional SOL CSV for fully independent RS context")
     p.add_argument("--label", default="builtin")
     args = p.parse_args()
 
-    trades, eq, eth_indexed, note = build(args.days, args.csv, args.label)
+    trades, eq, eth_indexed, note = build(args.days, args.csv, args.label,
+                                          btc_csv=args.btc_csv, sol_csv=args.sol_csv)
     out_dir = os.path.join(OUT_BASE, args.label)
     os.makedirs(out_dir, exist_ok=True)
     bt.export_trades_csv(trades, os.path.join(out_dir, "trades.csv"))
