@@ -37,3 +37,4 @@ backtest_output_eth_quality_v2/
 backtest_output_btc_compression_next/
 backtest_output_eth_stability/
 backtest_output_btc_compression_feasibility/
+backtest_output_eth_persistence/

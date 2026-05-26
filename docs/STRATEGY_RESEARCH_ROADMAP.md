@@ -9,6 +9,35 @@ _Last updated: 2026-05-25._
 
 ---
 
+## 0. Current Bottleneck: Persistence Validation
+
+**The bottleneck is now validation depth, not feature discovery.** Do NOT add
+new indicators, filters, exits, or strategy complexity unless explicitly
+requested. Both candidates are behaviorally coherent but statistically immature.
+
+- **ETH** needs **occurrence expansion and persistence validation**, NOT more
+  feature stacking. The open question is whether the momentum-acceptance /
+  "failure-to-separate" behavior **persists** across more independent conditions
+  (longer history, volatility regimes, ETH/BTC relative-strength cycles, and
+  bull/bear/range regimes) — and whether more natural occurrences exist **without
+  weakening setup quality**.
+- **BTC** (12H compression / volatility-release) is **paused from further
+  strategy-complexity work.** Next BTC progress requires **independent
+  validation data** (more historical regimes, additional exchanges, and
+  eventually perp-structure data: funding, OI delta, liquidation/sweep), NOT
+  more variants. Keep BTC framed as volatility-release research, not trend
+  continuation.
+- **No strategy advances because of a small-sample PF spike.** The next research
+  milestone is **not "higher PF"** — it is **"the same behavior persists across
+  more independent conditions."**
+
+Asset character (current working models, both unvalidated):
+- ETH ≈ momentum-acceptance / failure-to-separate phenomenon.
+- BTC ≈ rare volatility-release / compression-auction phenomenon.
+- SOL ≈ parked (future separate model, §7).
+
+---
+
 ## 1. Rejected (evidence-based, this phase)
 
 | What | Why rejected |
@@ -222,6 +251,19 @@ descriptive only**): 21 trades, 9 winners / 12 losers.
 - BTC compression stays a **volatility-release research lead**, not a
   trend-continuation model. BTC pullback stays **rejected**.
 
+**BTC strategy-complexity work is PAUSED (see §0).** No new BTC variants,
+filters, or exits. The 12H full-compression result (9 trades, 6 winners) is
+**too small to validate or advance** — promising hypothesis, not proof. Next
+BTC progress requires **independent validation data, not more logic.**
+
+**Future BTC data wishlist (to enable independent validation):**
+- additional exchange candles (cross-venue confirmation)
+- longer BTC historical periods if available
+- funding rates
+- open-interest delta
+- liquidation / sweep structure
+- session / liquidity-regime data
+
 ## 5. Deployment gates / global validation rules (must ALL pass on real data)
 
 > **Core philosophy:** No strategy advances on **profit factor alone.**
@@ -288,6 +330,8 @@ once. One hypothesis at a time; measure it alone; only then consider combining.
 | `eth_pullback_diagnostic.py` | Breakout vs pullback-continuation vs combined (tagged by `setup_type`). |
 | `eth_breakout_quality.py` | Winner-vs-loser feature audit for ETH breakouts. |
 | `eth_quality_audit_v2.py` | ETH 6H breakout audit v2: distribution stability, time-to-expansion / acceleration, regime segmentation, monthly tables. |
+| `eth_candidate_stability_audit.py` | ETH 6H breakout stability: walk-forward splits, Monte-Carlo order randomization, failure-to-separate. |
+| `eth_persistence_feasibility_audit.py` | ETH 6H breakout persistence across segments (year/quarter/regime/vol/RS); occurrence-expansion feasibility. |
 | `btc_diagnostic.py` | BTC trend-continuation pullback, 12H/1D (rejected — see §1.1). |
 | `btc_compression_diagnostic.py` | BTC compression → expansion breakout, 12H/1D (§4.1 hypothesis 1). |
 | `btc_compression_quality.py` | Winner-vs-loser feature audit for BTC compression breakouts. |
