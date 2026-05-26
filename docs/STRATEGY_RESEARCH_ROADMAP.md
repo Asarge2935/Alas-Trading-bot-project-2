@@ -66,7 +66,29 @@ behavior.
 Tooling: `data_source_feasibility_audit.py` (what data expansion is possible),
 `ohlcv_csv_validation_harness.py` (generic CSV loader/resampler),
 `eth_independent_data_validation.py`, `btc_independent_data_validation.py`
-(run the existing diagnostics against built-in or user-supplied CSV data).
+(run the existing diagnostics against built-in or user-supplied CSV data),
+`normalize_external_ohlcv.py` (normalize CryptoDataDownload / Binance-Vision CSVs),
+`download_binance_vision_klines.py` (fetch + combine Binance Vision spot klines).
+
+### 0.2 Data-source plan
+
+**Validation data expansion is the priority** — see `docs/DATA_DOWNLOAD_GUIDE.md`
+for step-by-step instructions.
+
+- **Layer 1 (now): independent OHLCV validation.** Use **Binance public data**
+  (`data.binance.vision`) or **CryptoDataDownload** Binance BTCUSDT/ETHUSDT
+  CSVs. Start with **BTCUSDT/ETHUSDT spot**. Normalize every file, then run the
+  CSV harness + independent-data validators.
+- **Layer 2 (later): perp-specific validation** (especially BTC) — Binance
+  USD-M futures klines, funding, OI, and liquidation/sweep structure. Not in
+  scope yet; scaffold only if trivial and without changing strategy logic.
+- **Normalized CSV schema (exact):** `timestamp,open,high,low,close,volume`
+  (UTC timestamps, ascending, de-duplicated, no silent forward-fill).
+- **Provider notes:** avoid **Kraken REST OHLC** for now (it returns only a
+  shallow recent window — bad for deep multi-year retrieval). Built-in
+  **Coinbase** data remains usable but is constrained by candle bucket/
+  pagination and a finite served history (~1460d).
+- **Do not add new strategy logic while data validation is underway.**
 
 ---
 

@@ -42,3 +42,4 @@ backtest_output_data_feasibility/
 backtest_output_csv_validation/
 backtest_output_eth_independent/
 backtest_output_btc_independent/
+data_external/
