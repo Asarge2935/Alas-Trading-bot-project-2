@@ -587,7 +587,7 @@ def evaluate_pullback(row, side, btc_row):
 # ---------------------------------------------------------------------------
 
 def run_backtest(data_by_symbol, trade_assets=None, long_only=False,
-                 strict_regime=False, setup="breakout"):
+                 strict_regime=False, setup="breakout", early_exit_fn=None):
     """Simulate the strategy.
 
     Diagnostic isolation (does NOT change the deployed rules): regime and
@@ -637,6 +637,8 @@ def run_backtest(data_by_symbol, trade_assets=None, long_only=False,
             trade = open_trades[sym]
             bar = indexed[sym].loc[current_time]
             exit_event = check_exit(trade, bar, current_time)
+            if exit_event is None and early_exit_fn is not None:
+                exit_event = early_exit_fn(trade, bar, current_time)  # opt-in; stop has priority
             if exit_event:
                 finalize_trade(trade, exit_event)
                 closed_trades.append(trade)
