@@ -88,36 +88,60 @@ def _download_month(market, symbol, interval, ym):
     return df, None
 
 
-def _detect_unit(median_abs):
-    """Detect epoch unit from open_time magnitude (Binance Vision has shipped
-    seconds, ms, and more recently MICROSECONDS)."""
-    if median_abs > 1e17:
-        return "ns"
-    if median_abs > 1e14:
-        return "us"
-    if median_abs > 1e11:
-        return "ms"
-    return "s"
+CANDIDATE_UNITS = ["ms", "us", "ns", "s"]
+_INTERVAL_SECONDS = {"1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800,
+                     "1h": 3600, "2h": 7200, "4h": 14400, "6h": 21600,
+                     "8h": 28800, "12h": 43200, "1d": 86400}
 
 
-def open_time_to_utc(open_time):
-    """Convert a Binance open_time column to UTC timestamps with robust unit
-    detection. Returns (timestamps, unit). Raises SystemExit on impossible
-    values (so a misdetected unit fails clearly instead of writing garbage)."""
+def _interval_seconds(interval):
+    return _INTERVAL_SECONDS.get(interval)
+
+
+def open_time_to_utc(open_time, interval_seconds, label=""):
+    """Robust, SELF-VERIFYING epoch-unit detection for one block of open_time
+    values (call PER monthly file — Binance Vision changed units mid-history).
+
+    Tries units ms/us/ns/s; for each, requires: no NaT, years in [2009,2100],
+    mostly increasing, and (if interval known) median spacing ~ the requested
+    interval. Picks the passing unit whose spacing best matches. On total
+    failure, raises SystemExit listing every unit's failure reason + the raw
+    min/median/max. Returns (timestamps_utc, unit)."""
     v = pd.to_numeric(open_time, errors="coerce")
+    diag = (f"[{label}] first3={list(open_time.head(3))} "
+            f"min={v.min():.0f} median={v.median():.0f} max={v.max():.0f} "
+            f"nonnumeric={int(v.isna().sum())}")
     if v.isna().any():
-        raise SystemExit("ERROR: non-numeric open_time values in downloaded klines.")
-    v = v.astype("int64")
-    unit = _detect_unit(float(v.abs().median()))
-    try:
-        ts = pd.to_datetime(v, unit=unit, utc=True)
-    except Exception as e:
-        raise SystemExit(f"ERROR: could not parse open_time as {unit}: {e}")
-    yr_min, yr_max = int(ts.dt.year.min()), int(ts.dt.year.max())
-    if yr_min < 2009 or yr_max > 2100:
-        raise SystemExit(f"ERROR: timestamp unit detection failed (unit='{unit}' -> "
-                         f"years {yr_min}..{yr_max}). Refusing to write impossible timestamps.")
-    return ts, unit
+        raise SystemExit(f"ERROR: non-numeric open_time values.\n  {diag}")
+    vv = v.astype("int64")
+
+    passed, reasons = [], []
+    for unit in CANDIDATE_UNITS:
+        ts = pd.to_datetime(vv, unit=unit, utc=True, errors="coerce")
+        if ts.isna().any():
+            reasons.append(f"{unit}: NaT / out-of-bounds")
+            continue
+        y0, y1 = int(ts.dt.year.min()), int(ts.dt.year.max())
+        if y0 < 2009 or y1 > 2100:
+            reasons.append(f"{unit}: years {y0}..{y1} outside [2009,2100]")
+            continue
+        d = ts.diff().dropna().dt.total_seconds()
+        inc = float((d > 0).mean()) if len(d) else 1.0
+        if inc < 0.9:
+            reasons.append(f"{unit}: only {inc*100:.0f}% increasing")
+            continue
+        med = float(d.median()) if len(d) else float("nan")
+        if interval_seconds and not (0.5 * interval_seconds <= med <= 2.0 * interval_seconds):
+            reasons.append(f"{unit}: median spacing {med:.0f}s != ~{interval_seconds}s")
+            continue
+        passed.append((unit, abs(med - (interval_seconds or med))))
+
+    if not passed:
+        raise SystemExit("ERROR: could not parse open_time. tried units ms/us/ns/s:\n  "
+                         + "\n  ".join(reasons) + f"\n  raw {diag}")
+    passed.sort(key=lambda x: x[1])
+    unit = passed[0][0]
+    return pd.to_datetime(vv, unit=unit, utc=True), unit
 
 
 def main():
@@ -132,20 +156,22 @@ def main():
                    help="permit missing HISTORICAL (non-trailing) months instead of failing")
     args = p.parse_args()
 
+    interval_seconds = _interval_seconds(args.interval)
     months = _months(args.start, args.end)
     print(f"Binance Vision {args.market} {args.symbol} {args.interval}: "
           f"{len(months)} months {args.start}..{args.end}")
-    frames, ok_months, missing_idx = [], [], []
+    raw_frames, ok_months, missing_idx = [], [], []
     for i, ym in enumerate(months):
         df, err = _download_month(args.market, args.symbol, args.interval, ym)
         if err:
             missing_idx.append(i)
             print(f"  MISSING {err}")
         else:
-            frames.append(df)
+            df["_ym"] = ym
+            raw_frames.append(df)
             ok_months.append(ym)
             print(f"  ok {ym}: {len(df)} rows")
-    if not frames:
+    if not raw_frames:
         print("ERROR: no monthly files downloaded. Check symbol/interval/dates. "
               "Binance Vision may not have the current partial month or very early months.")
         sys.exit(1)
@@ -161,17 +187,29 @@ def main():
               f"if you accept the gaps, or adjust --start/--end.")
         sys.exit(1)
 
-    allk = pd.concat(frames, ignore_index=True)
-    ts, unit = open_time_to_utc(allk["open_time"])
-    out = pd.DataFrame({
-        "timestamp": ts,
-        "open": allk["open"].astype(float), "high": allk["high"].astype(float),
-        "low": allk["low"].astype(float), "close": allk["close"].astype(float),
-        "volume": allk["volume"].astype(float),
-    })
+    # Diagnostic sample of the COMBINED raw open_time (mixed units show up here).
+    combined_ot = pd.to_numeric(pd.concat([f["open_time"] for f in raw_frames],
+                                          ignore_index=True), errors="coerce")
+    print(f"\nopen_time diagnostic: first3={list(combined_ot.head(3))} "
+          f"min={combined_ot.min():.0f} median={combined_ot.median():.0f} "
+          f"max={combined_ot.max():.0f}")
+
+    # Convert PER MONTH so a mid-history unit switch (ms -> us) is handled.
+    norm, unit_counts = [], {}
+    for f in raw_frames:
+        ts, unit = open_time_to_utc(f["open_time"], interval_seconds, label=f["_ym"].iloc[0])
+        unit_counts[unit] = unit_counts.get(unit, 0) + 1
+        norm.append(pd.DataFrame({
+            "timestamp": ts.values,
+            "open": f["open"].astype(float).values, "high": f["high"].astype(float).values,
+            "low": f["low"].astype(float).values, "close": f["close"].astype(float).values,
+            "volume": f["volume"].astype(float).values,
+        }))
+    out = pd.concat(norm, ignore_index=True)
     if out[["open", "high", "low", "close", "volume"]].isna().any().any():
         print("ERROR: missing/non-numeric OHLCV in downloaded klines — not forward-filling.")
         sys.exit(1)
+    out["timestamp"] = pd.to_datetime(out["timestamp"], utc=True)
     out = out.sort_values("timestamp")
     dups = int(out["timestamp"].duplicated().sum())
     if dups:
@@ -184,12 +222,13 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(args.output)) or ".", exist_ok=True)
     written.to_csv(args.output, index=False)
 
+    unit_str = ", ".join(f"{u}x{c}" for u, c in sorted(unit_counts.items()))
     print("\n" + "-" * 60)
     print(f"  source            : Binance Vision ({args.market})")
     print(f"  symbol            : {args.symbol}")
     print(f"  interval          : {args.interval}")
     print(f"  rows              : {len(out)}")
-    print(f"  detected ts unit  : {unit}")
+    print(f"  detected ts unit  : {unit_str}  (per-month; mixed = mid-history switch)")
     print(f"  start timestamp   : {out['timestamp'].min()}")
     print(f"  end timestamp     : {out['timestamp'].max()}")
     print(f"  skipped trailing  : {len(trailing_missing)}"
