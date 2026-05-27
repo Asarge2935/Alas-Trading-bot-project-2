@@ -11,15 +11,17 @@ Usage:
         --start 2020-01 --end 2026-05 --market spot --output ~/btc.csv
 
 Notes:
-  - market 'spot' is supported. Futures (USD-M) is left as a TODO (Layer 2);
-    pass --market futures to see the documented stub (it will exit, not guess).
+  - market 'spot' and 'futures' (Binance USD-M perpetual klines) are both
+    supported — same kline schema, different Vision path. Funding / open-
+    interest are NOT included here (a later Layer-2 step), only OHLCV klines.
   - Raw ZIPs are cached under data_external/raw/binance_vision/<market>/<symbol>/<interval>/.
   - Missing monthly files fail CLEARLY (Binance Vision sometimes lacks the
     current partial month, or very early months for a symbol).
   - Prefer 1h: the harness resamples to 6h/8h/12h/1d.
 
-Binance Vision URL pattern (spot monthly):
-  https://data.binance.vision/data/spot/monthly/klines/<SYM>/<INT>/<SYM>-<INT>-<YYYY-MM>.zip
+Binance Vision URL patterns (monthly):
+  spot   : https://data.binance.vision/data/spot/monthly/klines/<SYM>/<INT>/<SYM>-<INT>-<YYYY-MM>.zip
+  futures: https://data.binance.vision/data/futures/um/monthly/klines/<SYM>/<INT>/<SYM>-<INT>-<YYYY-MM>.zip
 """
 
 import argparse
@@ -52,11 +54,10 @@ def _months(start, end):
 
 
 def _url(market, symbol, interval, ym):
-    if market != "spot":
-        raise SystemExit("ERROR: only --market spot is implemented. Futures (USD-M) "
-                         "klines are a Layer-2 TODO — not scaffolded yet to avoid "
-                         "guessing the schema. Use spot for now.")
-    return f"{BASE}/spot/monthly/klines/{symbol}/{interval}/{symbol}-{interval}-{ym}.zip"
+    # spot and USD-M futures klines share the same kline schema (open_time,open,
+    # high,low,close,volume,...); only the path segment differs.
+    seg = "spot/monthly/klines" if market == "spot" else "futures/um/monthly/klines"
+    return f"{BASE}/{seg}/{symbol}/{interval}/{symbol}-{interval}-{ym}.zip"
 
 
 def _download_month(market, symbol, interval, ym):

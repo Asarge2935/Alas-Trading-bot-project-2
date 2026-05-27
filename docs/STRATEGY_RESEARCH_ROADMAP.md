@@ -64,24 +64,53 @@ behavior.
   quality to create more occurrences.
 
 **First independent-data run — Binance spot, ~6.3 years (2020-01 .. 2026-04):**
-- **ETH 6H strict breakout: robustness did NOT persist.** Ex-best PF fell
-  1.55 → **0.97** and ex-best net went **negative** (one-trade-dependent; top
-  trade = 110% of net). The *strategy P&L* is fragile across sources, but the
-  *failure-to-separate behavior* replicated (fast +1.04R/88% vs slow
-  −0.65R/12%). See §2.
+- **ETH 6H strict breakout: robustness did NOT persist *in the partial run*.**
+  With Binance ETH but **Coinbase** BTC/SOL context, ex-best PF fell 1.55 →
+  0.97 and ex-best net went negative. **CORRECTED (see below):** that collapse
+  was largely a **venue-mismatch artifact** — re-running **fully independent**
+  (BTC/SOL also from Binance) restored ex-best PF to **1.13 / +$7.24**.
 - **BTC 12H full-compression: behavior persisted, rarity is fatal.** Shape held
   (ex-best PF 2.35, OOS PF 4.31 > IS 2.54, top 35%), but only **15 trades over
   6.3y** — independent + longer data did **not** fix the structural rarity. See
   §4.1.1.
+
+**Data integrity + fully-independent + failure-to-separate EXIT (Step 1 & 2):**
+- **Data integrity CLEAN** (`data_integrity_audit.py`): Binance BTC/ETH 99.81%
+  coverage, no dups/overlaps, ms→us seam clean; cross-source vs Coinbase
+  corr 0.99973 (median |Δ| 0.45%, USDT-vs-USD). Data is trustworthy.
+- **Venue-mismatch corrected:** fully-independent Binance ETH (BTC/SOL also
+  Binance) gives ETH ex-best PF **1.13 (+$7.24)**, top-trade 110%→70% — so ETH
+  is **fragile but ALIVE**, not the one-trade artifact the partial run implied.
+- **Failure-to-separate confirmed as a behavior across THREE datasets**
+  (Coinbase 6/8 vs 0/5; Binance-partial 6/8 vs 1/8; Binance-full 9/11 vs 2/11;
+  fast +1.02R/82% vs slow −0.57R/18%).
+- **Fixed K=2 failure-to-separate EXIT improved ROBUSTNESS on BOTH datasets**
+  (one un-tuned rule: "not +0.5R by close of bar 2 → exit at bar-2 close").
+  Coinbase ex-best PF 1.55→1.90, maxDD 2.70→1.59%, top 51.6→45.9%, top-3
+  131.8→110.7%. Binance-full ex-best PF 1.13→1.58, maxDD 3.84→2.20%, top
+  70.1→42.2%, top-3 178.2→101.8%, positive years 4/7→5/7. It neutralized the
+  worst year (2024) on both. **Strongest result in the project so far.**
+  *Caveat:* the rule was derived from behavior on these same datasets, so it is
+  **not truly out-of-sample**; and early exits free the 1-slot so trade counts
+  shifted (13→14, 22→24) — baseline-vs-exit is faithfully re-simulated, **not**
+  a pure same-trades comparison.
+- **Still NOT deployable:** 14 / 24 trades (< 30 gate); Coinbase 8 winners
+  (< 12); top-3 still ~100–110% of net; **2026 negative on both**.
 - **Net: nothing deployable; validation caught real fragility (ETH) and an
   irreducible sample ceiling (BTC) that a PF-only view would have missed.**
+- **Next milestone: TRUE unseen validation** — run the EXACT SAME fixed K=2 /
+  +0.5R rule on a third venue/instrument (§0.3). Do NOT tune K. Do NOT advance
+  on PF alone.
 
 Tooling: `data_source_feasibility_audit.py` (what data expansion is possible),
 `ohlcv_csv_validation_harness.py` (generic CSV loader/resampler),
 `eth_independent_data_validation.py`, `btc_independent_data_validation.py`
 (run the existing diagnostics against built-in or user-supplied CSV data),
+`data_integrity_audit.py` (gap/seam/cross-source checks),
+`eth_failure_to_separate_exit_diagnostic.py` (baseline vs fixed K=2 exit, both datasets),
+`eth_third_source_validation.py` (same fixed rule on a third venue — §0.3),
 `normalize_external_ohlcv.py` (normalize CryptoDataDownload / Binance-Vision CSVs),
-`download_binance_vision_klines.py` (fetch + combine Binance Vision spot klines).
+`download_binance_vision_klines.py` (fetch + combine Binance Vision spot/futures klines).
 
 ### 0.2 Data-source plan
 
@@ -102,6 +131,30 @@ for step-by-step instructions.
   **Coinbase** data remains usable but is constrained by candle bucket/
   pagination and a finite served history (~1460d).
 - **Do not add new strategy logic while data validation is underway.**
+
+### 0.3 Third-venue validation plan (current next step)
+
+**Goal: run the EXACT SAME fixed ETH rule (strict breakout + K=2 / +0.5R
+failure-to-separate exit) on UNSEEN venue/instrument data.** The goal is **not**
+to improve results — it is to see whether the same un-tuned rule holds on data
+it was never derived from. Do NOT tune K, do NOT sweep, do NOT change the rule.
+
+Validation-source priority:
+1. **Kraken ETH/USD spot** — if practical to download deep historical OHLCV(T).
+   Kraken REST OHLC is shallow (recent only); prefer a bulk CSV export
+   (Kraken's downloadable historical data) if available.
+2. **Binance ETHUSDT USD-M futures/perp** — easiest path, since Binance Vision
+   publishes futures klines (`download_binance_vision_klines.py --market
+   futures`) with the same schema; lets us test spot-vs-perp on the same venue.
+3. **Any other clean exchange CSV** (Bitstamp, OKX export, CryptoDataDownload)
+   if Kraken is difficult.
+
+Tool: `eth_third_source_validation.py` runs baseline vs the fixed exit on the
+third source. Prefer **matching-venue BTC/ETH/SOL** context (strict regime needs
+BTC + RS). If SOL is unavailable on that venue, the script states clearly that
+it is a **partial-context** run (or cannot replicate strict regime) — venues are
+never silently mixed. A real effect should hold on this third, unseen source
+too; a one-source-only effect is noise.
 
 ---
 
