@@ -46,3 +46,4 @@ data_external/
 backtest_output_data_integrity/
 backtest_output_eth_fts_exit/
 backtest_output_eth_third_source/
+logs/
