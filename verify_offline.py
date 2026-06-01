@@ -17,6 +17,7 @@ Exits non-zero if any assertion fails.
 
 import csv
 import os
+import subprocess
 import sys
 import numpy as np
 import pandas as pd
@@ -175,7 +176,20 @@ def main():
     if not isinstance(gate_pass, bool):
         failures.append("gate_report did not return a bool verdict")
 
-    # 10. Done.
+    # 10. Strict-parity gate self-test (subprocess; isolates the gate logic).
+    parity_script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "verify_signal_parity_offline.py")
+    if os.path.exists(parity_script):
+        print("\nRunning verify_signal_parity_offline ...")
+        r = subprocess.run([sys.executable, parity_script],
+                           capture_output=True, text=True)
+        print(r.stdout, end="")
+        if r.stderr:
+            print(r.stderr, end="")
+        if r.returncode != 0:
+            failures.append(f"verify_signal_parity_offline failed (exit={r.returncode})")
+
+    # 11. Done.
     if failures:
         print("\n[FAIL] Offline verification found issues:")
         for f in failures:

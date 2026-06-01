@@ -94,21 +94,93 @@ Exit-event extras: `bar_timestamp` (exit bar), `entry_price`, `exit_price`,
 }
 ```
 
-## Parity check
-
-`signal_replay_parity_check.py` reconstructs trades from the JSONL (matching
-entry/exit by `position_id`) and optionally compares them to a backtest
-`trades.csv` row-by-row (matched by `entry_time`). Reports trade-count match
-plus per-field |Δ| (entry_price, exit_price, r_multiple) and exact-match counts
-(exit_time, exit_reason).
+## Real Binance replay command (fully independent)
 
 ```bash
-python3 signal_replay_parity_check.py --signals logs/signals_eth_replay.jsonl
-python3 signal_replay_parity_check.py --signals logs/signals_eth_replay.jsonl \
-    --trades backtest_output_eth_fts_exit/coinbase_builtin/trades_exit.csv
+python3 signal_logger.py --mode csv-replay \
+    --eth-csv ~/eth.csv --btc-csv ~/btc.csv --sol-csv ~/sol.csv \
+    --label binance_fully_indep \
+    --output logs/signals_eth_binance_replay.jsonl
 ```
 
-Parity is NOT enforced today. The tool prepares for the future bit-for-bit gate.
+This produces 24 entry + 24 exit events under the current research-frozen rule.
+No network, no API, no orders — just `bt.run_backtest` against the CSV-loaded
+data and an event written per signal.
+
+## Parity check — report-only and strict modes
+
+`signal_replay_parity_check.py` reconstructs trades from the JSONL (matching
+entry/exit by `position_id`) and compares them to a backtest `trades.csv`
+joined on `entry_time`. Without `--strict` it is a report-only tool (always
+exit 0 unless inputs are invalid). With `--strict` it **enforces** parity:
+every required check must pass or the script exits non-zero.
+
+### Strict parity command (real Binance run)
+
+```bash
+python3 signal_replay_parity_check.py \
+    --signals logs/signals_eth_binance_replay.jsonl \
+    --trades ./backtest_output_eth_fts_exit/binance_fully_indep/trades_exit.csv \
+    --strict
+```
+
+Flags and defaults:
+
+| flag | default | meaning |
+|---|---|---|
+| `--strict` | off | enforce required checks; exit non-zero on any failure |
+| `--price-tol` | `1e-8` | max abs Δ for entry_price / exit_price |
+| `--r-tol` | `1e-8` | max abs Δ for r_multiple |
+| `--time-tol-seconds` | `0` | max abs Δ for exit_time (in seconds) |
+| `--max-mismatches` | `20` | first N mismatches to print on FAIL |
+
+### Required checks (must all pass under `--strict`)
+
+- trade count matches
+- no signals-only entries; no csv-only entries (after entry_time join)
+- `entry_price` within `--price-tol`
+- `exit_price` within `--price-tol` (logger `exit_price` vs CSV `exit_price_final`)
+- `exit_time` within `--time-tol-seconds`
+- `exit_reason` exact match (when both sides have it)
+- `r_multiple` within `--r-tol` (when both sides have it)
+
+### Output
+
+The human-readable summary always prints. On `--strict`, it ends with either:
+
+```
+STRICT PARITY: PASS
+```
+
+or
+
+```
+STRICT PARITY: FAIL (<N> mismatch(es); showing up to <M>)
+  <field> @ <row>  sig=<value>  csv=<value>  Δ=<delta>
+```
+
+### Why the gate exists
+
+A strict parity pass **must** hold before any dry-run / paper / live work
+proceeds. It guarantees that the live-shaped signal path produces the same
+events as the offline backtest — so any later divergence is caused by data
+feed / execution / time-handling, not by the strategy code shifting.
+
+**Strict parity is infrastructure validation only.** Passing it does NOT mean
+the strategy is deployable. The research gates (§5 of the roadmap), the paper
+gates, the operational gates, the risk gates, and the execution gates all
+still apply. No live trading. No paper trading. No orders.
+
+### Offline self-test of the gate
+
+```bash
+python3 verify_signal_parity_offline.py
+```
+
+Builds a tiny synthetic fixture, runs strict parity (expects PASS), mutates
+one `exit_price`, re-runs (expects FAIL), and reports `[PASS]` only if both
+verdicts behaved as expected. The same self-test is also called from
+`verify_offline.py`.
 
 ## Limitations / known-not-yet
 
