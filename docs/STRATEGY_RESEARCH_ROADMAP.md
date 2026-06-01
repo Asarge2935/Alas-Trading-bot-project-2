@@ -553,3 +553,172 @@ SOL strategy code exists yet; this records the intended research direction.
 These principles, setup families, data, and risk rules are research notes only.
 Any future SOL module must still clear every deployment gate in §5 on real data,
 and would require paper trading before any live consideration.
+
+## 8. Live Readiness Assessment
+
+**Verdict (no hype): we are NOT close to live.** Two independent reasons:
+(1) the edge is unproven — both ETH datasets fed the same fixed rule's design,
+so it is not truly out-of-sample yet, and the absolute edge is likely too small
+to overcome real-world execution costs at retail capital;
+(2) the repo is a research lab — roughly **5%** of a production trading system.
+**Recommended phase: B** — build paper / signal infrastructure in parallel with
+running the ONE remaining true-OOS test. Do **not** go live.
+
+### 8.1 Research readiness
+
+**Validated:**
+- Data integrity across two venues (Binance vs Coinbase corr 0.9997; gaps tiny;
+  ms→us seam clean).
+- ETH "failure-to-separate" *as a behavior*: replicated on 3 datasets (fast
+  +1.0R/82% vs slow −0.6R/18%). Large, consistent effect size.
+- A fixed un-tuned exit (K=2 / +0.5R) improved robustness on **two** related
+  datasets (ex-best PF up, maxDD down, top/top-3/best-month down, 2024
+  neutralized). Best-evidenced finding in the project.
+
+**Unvalidated / weak:**
+- No truly unseen OOS yet. Two datasets from the rule's design space = weak
+  evidence; needs a third-venue/instrument pass with the rule **frozen**.
+- ETH sample: 14 / 24 trades (Coinbase / Binance) — both below the 30-trade
+  gate; Coinbase 8 winners (< 12); top-3 still ~100–110% of net (the edge is
+  ~3 trades), 2026 negative on both.
+- BTC: 15 trades over 6.3y — structurally rare; unlikely ever to clear at 12H.
+- SOL: untouched.
+
+**Economic reality (not just statistical):** Binance ETH after exit yields
+~4 trades/year × +0.34 avgR × 1% risk → **~+1.4%/yr nominal *before* fees,
+slippage, funding, and operational drag.** Even if every research gate clears,
+the strategy is **too low-frequency to be economically meaningful on retail
+capital.** That is the elephant in the room.
+
+### 8.2 Product / system readiness
+
+**Have (research lab):** backtest engine; regime/RS/breakout selection; exit
+framework; autopsy / excursions / gate report; Coinbase REST with hardened
+retry+cache; generic CSV harness + normalizer; Binance Vision downloader
+(spot + futures); integrity audit (gap / seam / cross-source); independent-data
+validators; third-source scaffold; strategy + research docs.
+
+**Missing (production system) — roughly everything that matters for live:**
+- live data feed (websocket; not REST polling)
+- exchange API integration (order placement, account/position/balance read, leverage)
+- order execution layer (market/limit, idempotency w/ client IDs, retries,
+  partial-fill handling, time-in-force)
+- live risk engine (per-trade 1%, daily/weekly halts, max-open, DD circuit
+  breakers — all wired to live equity, not sim)
+- position sizing in $ at order time (current price + current equity)
+- live fee/slippage observation + reconciliation vs model
+- funding tracking against open positions (currently a placeholder constant)
+- structured logging that survives restart (sequence numbers, journal)
+- alerting (Telegram / email / pager)
+- kill switch (hardware + software)
+- config + secrets management (env / vault — never in repo)
+- dry-run / signal-only mode
+- paper trading mode (signal logger + simulated fills)
+- reconciliation (expected vs actual fills; position-drift detection)
+- monitoring (latency, fill quality, slippage, attribution, equity curve)
+- deployment environment (VPS / container; NTP / time-sync)
+- error handling + restart safety (atomic state; replay from journal)
+- exchange-disconnect handling (reconnect + idempotent re-submit)
+- rate limiting
+- backtest ↔ live parity check
+- ops runbook
+
+**Production-readiness: ~5%.**
+
+### 8.3 Go-live gates (must ALL pass)
+
+**Research gates** (§5 plus the new requirement):
+- ≥30 trades, ≥12–15 winners, PF ≥1.3, avg R > +0.2, ex-best positive,
+  maxDD < 25%, no month > 40–50% of net, OOS PF doesn't collapse, distribution
+  stability, regime segmentation.
+- **Plus: clean pass of the EXACT fixed rule on a truly unseen dataset**
+  (third venue/instrument it was not designed against).
+
+**Paper / sim gates:**
+- ≥90 days continuous paper run.
+- Backtest ↔ replay parity = bit-for-bit identical signals on the same window.
+- Simulated fills inside slippage envelope.
+- Zero unexplained position drift over the window.
+
+**Operational gates:**
+- Restart safety verified with injected crashes (no double-orders, no lost state).
+- Reconnect recovery verified.
+- Time-sync verified (drift < 1s).
+- Secrets isolated; no keys in repo.
+- Logs + alerts to a destination you actually monitor.
+- Kill switch tested end-to-end.
+
+**Risk gates:**
+- Per-trade 1% cap enforced at order time using live equity.
+- Daily / weekly loss halts wired to live equity.
+- Max-open-positions and leverage caps enforced at the adapter.
+- Drawdown circuit breaker triggers in paper before going live.
+
+**Execution gates:**
+- Live slippage matches modeled 0.10% / 0.20% within tolerance over ≥20 fills.
+- Fee rate confirmed at the venue and modeled exactly.
+- Funding charged at real cadence; modeled drag matches actual within tolerance.
+- Zero rejected orders inside a 30-day paper window after burn-in.
+
+### 8.4 Recommended next phase — **B**
+
+> **B. Build paper/signal infrastructure while continuing validation.**
+
+- **Not A** (research only): diminishing returns; only one research test still
+  meaningfully moves the needle (third-venue OOS). More tweaking = overfit risk.
+- **Not C** (tiny live): no execution infra, no risk infra, no truly-OOS edge.
+  Going live now pays real money for nothing.
+- **Not D** (stop): a real (if marginal) phenomenon was identified, and paper-
+  infrastructure work is useful regardless of which strategy eventually graduates.
+
+### 8.5 Minimum viable trading system — build order
+
+Each step must pass before the next. Steps 1–4 are useful regardless of which
+strategy graduates and force the research code into the shape needed for live.
+
+1. **Signal-only logger.** Each closed bar, run the exact existing selection
+   (regime + RS + breakout + FTS exit) and emit a structured signal event to
+   disk. **No orders.**
+2. **Backtest ↔ replay parity.** Diff signal-logger events vs offline backtest
+   on the same window. **Zero differences required.**
+3. **Paper / dry-run.** Signal logger + simulated fills (next-bar open +
+   modeled slippage/fees) + on-disk position state + restart safety. Compare
+   paper net vs backtest net over the same window.
+4. **Operational scaffolding.** Structured logging w/ sequence numbers, secrets
+   via env, kill-switch file, alerting hook, time-sync check, restart-from-journal.
+5. **Exchange adapter — READ-ONLY first.** Subscribe to live candles; read
+   account balance + open positions; reconcile to expected state. Still no orders.
+6. **Live risk engine.** Pre-trade checks tied to live equity; refuses to send
+   unless every check passes.
+7. **Execution adapter.** Idempotent submission with client IDs; partial fills;
+   rejection handling; fill reconciliation within N seconds.
+8. **30+ days paper with the full stack, no real orders.** Parity, slippage,
+   fees, funding within tolerance. Crash tests injected.
+9. **Only after every gate clears: tiny-capital live pilot.** Manual oversight,
+   weekly review.
+
+### 8.6 Time-waste assessment
+
+**STOP (diminishing returns / overfit risk):**
+- K-sweeps, threshold tuning, FTS-rule variants.
+- More BTC variant proliferation (compression × HTF × exit × etc.).
+- New ETH features without first running the third-source OOS check.
+- Coinbase-only re-tests (we have integrity-clean Binance now).
+- More timeframe combinations.
+
+**KEEP (still meaningful):**
+- ONE third-venue/instrument OOS test of the **frozen** fixed rule
+  (Kraken ETH/USD or Binance ETH perp). Pass/fail. Single shot.
+- Periodic re-runs of the existing diagnostics on newly-arrived data (monthly).
+
+**START (now, in parallel):**
+- Steps 1–4 of §8.5 (signal logger → backtest-parity → paper → ops scaffolding).
+  Highest leverage: it's both eventual product *and* it forces research/live
+  parity early, exposing divergences while they are cheap.
+
+---
+
+**Net.** ETH is the only candidate worth carrying forward; even at its best it
+is too low-frequency to matter economically on retail capital with the current
+edge. **Do not go live.** Run the one remaining OOS test, build the paper/
+signal infrastructure, and reassess in months — not weeks.
