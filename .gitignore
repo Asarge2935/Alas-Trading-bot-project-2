@@ -1,6 +1,9 @@
 # Backtest output (generated locally, do not commit)
 backtest_output/
 
+# Strategy 1 data cache (generated locally, large, not committed)
+data_cache/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -21,3 +24,26 @@ Thumbs.db
 .env
 *.env
 !*.env.example
+backtest_output_4h/
+backtest_output_pullback/
+backtest_output_eth_htf/
+backtest_output_eth_breakout_quality/
+backtest_output_btc_diagnostic/
+backtest_output_btc_compression/
+backtest_output_btc_compression_quality/
+backtest_output_btc_htf_alignment/
+backtest_output_btc_full_compression/
+backtest_output_eth_quality_v2/
+backtest_output_btc_compression_next/
+backtest_output_eth_stability/
+backtest_output_btc_compression_feasibility/
+backtest_output_eth_persistence/
+backtest_output_data_feasibility/
+backtest_output_csv_validation/
+backtest_output_eth_independent/
+backtest_output_btc_independent/
+data_external/
+backtest_output_data_integrity/
+backtest_output_eth_fts_exit/
+backtest_output_eth_third_source/
+logs/

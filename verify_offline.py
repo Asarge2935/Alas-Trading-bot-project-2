@@ -17,6 +17,7 @@ Exits non-zero if any assertion fails.
 
 import csv
 import os
+import subprocess
 import sys
 import numpy as np
 import pandas as pd
@@ -25,21 +26,28 @@ import backtest as bt
 
 
 def synth_series(n_bars, seed, base_price, drift=0.0, vol=0.02):
-    """Generate a synthetic OHLCV series with realistic volatility for indicator triggers."""
+    """Generate a synthetic OHLCV series with trending regimes and breakouts.
+
+    The canonical strategy only trades in a sustained BTC-led regime after a
+    20-bar breakout with a strong close. Pure noise rarely satisfies all of
+    that, so we build slow multi-month up/down trends (sine-wave drift) on top
+    of the random walk. This produces risk_on/risk_off stretches and genuine
+    new-high/new-low breakouts, giving the invariant checks real trades to bite.
+    """
     rng = np.random.default_rng(seed)
-    # Random walk with drift + occasional sharper moves so RSI hits 30/70 sometimes.
-    returns = rng.normal(drift, vol, n_bars)
-    # Inject pullbacks every ~20 bars to actually fire long signals.
-    for i in range(20, n_bars, 20):
-        returns[i] = -3 * vol
+    # Slow regime cycle: ~2 full up/down swings across the series.
+    t = np.linspace(0, 4 * np.pi, n_bars)
+    trend_drift = 0.004 * np.sin(t)
+    returns = rng.normal(drift, vol, n_bars) + trend_drift
     closes = base_price * np.exp(np.cumsum(returns))
-    highs = closes * (1 + np.abs(rng.normal(0, vol / 2, n_bars)))
-    lows = closes * (1 - np.abs(rng.normal(0, vol / 2, n_bars)))
+    # Strong closes near the bar's extreme on the trending bars so breakouts pass.
+    highs = closes * (1 + np.abs(rng.normal(0, vol / 3, n_bars)))
+    lows = closes * (1 - np.abs(rng.normal(0, vol / 3, n_bars)))
     opens = np.concatenate([[base_price], closes[:-1]])
-    volumes = rng.uniform(1000, 5000, n_bars)
-    # Spike volume on the pullback bars so the volume filter passes.
-    for i in range(20, n_bars, 20):
-        volumes[i] *= 3
+    volumes = rng.uniform(2000, 4000, n_bars)
+    # Spike volume periodically so the >average volume filter can pass.
+    for i in range(15, n_bars, 15):
+        volumes[i] *= 2.5
     times = pd.date_range(end=pd.Timestamp.now(tz="UTC").floor("h"),
                           periods=n_bars, freq="6h")
     return pd.DataFrame({
@@ -55,11 +63,10 @@ def synth_series(n_bars, seed, base_price, drift=0.0, vol=0.02):
 def main():
     failures = []
 
-    # 1. Build six synthetic series (1500 bars ≈ 375 days at 6H).
-    base_prices = {
-        "BTC-USD": 100_000, "ETH-USD": 3_500, "SOL-USD": 200,
-        "XRP-USD": 2.5,    "ADA-USD": 0.8,   "DOT-USD": 7.0,
-    }
+    # 1. Build synthetic series (1500 bars ≈ 375 days at 6H) for the
+    #    BTC/ETH/SOL universe. Different seeds + phases so the assets diverge
+    #    in relative strength (otherwise the RS pick is degenerate).
+    base_prices = {"BTC-USD": 100_000, "ETH-USD": 3_500, "SOL-USD": 200}
     data = {}
     for i, sym in enumerate(bt.ASSETS):
         df = synth_series(1500, seed=42 + i, base_price=base_prices[sym])
@@ -67,7 +74,7 @@ def main():
         df = bt.add_indicators(df)
         data[sym] = df
         print(f"  {sym}: {len(df)} bars, "
-              f"RSI range [{df['rsi_14'].min():.1f}, {df['rsi_14'].max():.1f}]")
+              f"close range [{df['close'].min():.1f}, {df['close'].max():.1f}]")
 
     # 2. Run the backtest.
     print("\nRunning offline backtest on synthetic data...")
@@ -159,11 +166,30 @@ def main():
         print(f"[OK] max open positions observed: {max_open} "
               f"(limit {bt.MAX_OPEN_POSITIONS})")
 
-    # 9. Run the report so we exercise that path too.
+    # 9. Run the report and gate report so we exercise those paths too.
     print()
     bt.report_summary(trades, equity_curve)
+    gate_lines, gate_pass = bt.gate_report(trades, equity_curve, data)
+    print("\n".join(gate_lines))
+    # The gate VERDICT on synthetic data is meaningless; we only assert the
+    # gate report RUNS without error and returns a bool.
+    if not isinstance(gate_pass, bool):
+        failures.append("gate_report did not return a bool verdict")
 
-    # 10. Done.
+    # 10. Strict-parity gate self-test (subprocess; isolates the gate logic).
+    parity_script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "verify_signal_parity_offline.py")
+    if os.path.exists(parity_script):
+        print("\nRunning verify_signal_parity_offline ...")
+        r = subprocess.run([sys.executable, parity_script],
+                           capture_output=True, text=True)
+        print(r.stdout, end="")
+        if r.stderr:
+            print(r.stderr, end="")
+        if r.returncode != 0:
+            failures.append(f"verify_signal_parity_offline failed (exit={r.returncode})")
+
+    # 11. Done.
     if failures:
         print("\n[FAIL] Offline verification found issues:")
         for f in failures:

@@ -12,7 +12,8 @@ critical line is "no", do not proceed — fix the issue or rebuild.
       Fewer than 30 trades over 12 months means signals are too rare for
       a $500 account to ever turn a meaningful return after fees.
 - [ ] `backtest_output/equity_curve.csv` exists and has roughly
-      `365 days × 4 bars/day = 1460` rows (minus warmup).
+      `days × 4 bars/day` rows (minus warmup) — ~5,800 for the ~4-year
+      default.
 - [ ] No exceptions raised during the run.
 - [ ] No `ZeroDivisionError`, `KeyError`, or `IndexError` warnings on
       stderr.
@@ -46,18 +47,22 @@ For each of 10 random trades, confirm:
 - [ ] `signal_candle_time` is a closed 6H bar; `entry_time` is the
       **next** 6H bar's open. They should be exactly 6 hours apart.
 - [ ] `entry_price` matches the next bar's open price for that symbol.
-- [ ] For long trades: signal candle close > `ema_50`,
-      `ema_20 > ema_50`, and `rsi_at_signal < 30`.
-- [ ] For short trades: signal candle close < `ema_50`,
-      `ema_20 < ema_50`, and `rsi_at_signal > 70`.
-- [ ] `stop_price` is exactly `2 × atr_at_signal` from `entry_price` in
-      the correct direction.
-- [ ] `target_1_price` is exactly `3 × atr_at_signal` from entry.
-- [ ] `target_2_price` is exactly `6 × atr_at_signal` from entry.
-- [ ] `notional_usd ≤ 100` and `margin_usd ≤ 50`.
-- [ ] `r_multiple` is sensible: stop-out should be ≈ −1.0R after costs;
-      full target_2 hit should be ≈ +4.5R (avg of +1.5R partial and
-      +3R runner, minus a half-R or so of costs).
+- [ ] `regime_state` is `risk_on` for longs and `risk_off` for shorts —
+      never `neutral`.
+- [ ] The traded `symbol` is the strongest 20-day return of BTC/ETH/SOL
+      for longs (weakest for shorts) as of the signal — `rs_return` of
+      the chosen asset should be the most extreme of the three.
+- [ ] `stop_price` is the breakout candle's extreme OR 1.5×ATR from
+      entry — whichever is **wider** (farther from entry).
+- [ ] `target_1_price` is exactly +1.5R from entry (R = entry-to-stop
+      distance), in the correct direction.
+- [ ] `notional_usd` ≈ `(0.01 × equity) / stop_distance_pct`, capped at
+      `equity × 2` (leverage cap).
+- [ ] `exit_reason` is one of: `stop_hit`, `breakeven_stop`,
+      `trail_stop`, `time_stop`, `backtest_end`. (No `regime_flip` or
+      `target_2` — those were v2.)
+- [ ] `r_multiple` is sensible: a clean stop-out ≈ −1.0R after costs; a
+      trade that took the +1.5R partial and trailed should be positive.
 
 ## B1. Partial-exit accounting checks
 
@@ -68,40 +73,39 @@ For each of 10 random trades, confirm:
 - [ ] Stop moves to breakeven only after target 1 partial fill — confirm
       by sampling a stopped-out post-partial trade and checking its
       exit price equals `entry_price` (within rounding).
-- [ ] Runner is not closed on the same candle as target 1, even if
-      target 2 was also reached inside that candle. The runner closes
-      on the NEXT bar at earliest.
+- [ ] The trailing stop does not tighten and fire on the same candle as
+      the +1.5R partial — the runner's trailing stop ratchets starting
+      the NEXT bar (conservative same-bar policy).
 
-## C. Profit factor and risk numbers (the handoff's deployment gates)
+## C. Validation gates (the backtest prints these — STRATEGY_SPEC.md §9)
 
-From the printed summary or by computing from trades.csv:
+`backtest.py` prints a "VALIDATION GATES" block with a PROMOTE/REJECTED
+verdict. Confirm each:
 
-- [ ] **Net profit factor (ALL bucket) ≥ 1.5.** If 1.0–1.5, paper trade
-      is marginal — make an explicit informed-decision call. Below 1.0
-      means the strategy loses money after costs and **should not be
-      deployed.**
-- [ ] **Max drawdown < 25%.** If it exceeds 25%, the drawdown_stop
-      circuit breaker should have fired in the run.
-- [ ] **Max consecutive losses < 8.** If 8+, the strategy has fat-tail
-      losing streaks; expect months where you stare at the bot doing
-      nothing right.
-- [ ] **Avg R-multiple > +0.2.** Each trade should have positive
-      expectancy on average.
-- [ ] **Trade count between 30 and 200.** Lower means signals are too
-      rare to be statistically meaningful at this account size; higher
-      means the filters are too loose for the timeframe.
+- [ ] **Sample ≥ 30 trades.** Fewer means the numbers aren't meaningful.
+      With strict regime+RS+breakout gating this is the gate most likely
+      to fail on a short window — use the full ~4-year default.
+- [ ] **Positive expectancy:** net P&L > 0 AND avg R > 0.
+- [ ] **Net profit factor (ALL bucket) ≥ 1.3.**
+- [ ] **Beats equal-weight BTC/ETH/SOL HODL** on daily Sharpe.
+- [ ] **Max drawdown < 25%** (mark-to-market). If it exceeds 25%, the
+      drawdown_stop circuit breaker should have fired in the run.
+- [ ] **No single trade > 25% of net P&L** (no one lucky trade carrying
+      the result).
+- [ ] **Out-of-sample PF ≥ 0.75× in-sample PF** (70/30 time split).
+- [ ] **Max consecutive losses** is not alarming (8+ means fat-tail
+      losing streaks; expect long do-nothing stretches).
 
-## D. Per-asset sanity (don't deploy a strategy that only works on one coin)
+## D. Per-asset / direction sanity (don't deploy a one-coin, one-regime fluke)
 
-- [ ] At least 4 of 6 assets have ≥ 5 trades each. If only 1 or 2 assets
-      generated signals, the strategy is curve-fit to those assets'
-      regimes.
-- [ ] No single asset accounts for > 50% of total P&L. If one asset
-      carries the whole result, you're not running a 6-asset strategy,
-      you're running a 1-asset strategy with 5 distractions.
+- [ ] More than one of BTC/ETH/SOL generated trades. If only one asset
+      ever traded, the relative-strength selection is degenerate or the
+      result is curve-fit to that asset.
+- [ ] No single asset accounts for > 50% of total P&L.
 - [ ] Both long and short trades fired. If only longs fired, you tested
-      a bull market; the strategy hasn't been stress-tested to the
-      downside.
+      a bull market; the short side (risk-off regime) hasn't been
+      stress-tested. The 20-bar window almost certainly lacks enough
+      risk-off stretches if shorts are absent.
 
 ## E. Drawdown circuit breakers actually trip
 
@@ -120,11 +124,10 @@ From the summary's per-bucket Fees / Slippage / Funding lines:
 
 - [ ] Fees + slippage + funding combined should be 15–35% of gross P&L
       magnitude. Above ~50% means costs are dominating and the strategy
-      is barely viable.
-- [ ] No single trade's combined fees exceed $1.50 (10% of a $5 risk
-      unit). The $0.15 fee minimum applies — small notionals get hit
-      hard. Trades sized down by the cap should be the exception, not
-      the norm.
+      is barely viable. (Taker fee is modeled at 0.10% per side.)
+- [ ] No single trade's combined fees are a large fraction of its 1%
+      risk unit. The $0.15 fee minimum applies — small notionals get hit
+      hard, which is exactly why the live integer-contract sizing matters.
 - [ ] **Funding warning understood:** the funding drag is a flat
       placeholder, not real historical funding-rate data. Real funding
       lookups must be wired in before live trading. After a partial
@@ -145,13 +148,15 @@ Open `equity_curve.csv` in a spreadsheet, plot `equity` vs `time`:
 
 ## H. Documentation is in sync
 
-- [ ] `rules.json` and `backtest.py` constants match. Spot-check
-      `RISK_PER_TRADE_USD`, `MAX_LEVERAGE`, `TIME_STOP_BARS`,
-      `DRAWDOWN_PAUSE_PCT`, `DRAWDOWN_STOP_PCT`.
+- [ ] `rules.json` (v3) and `backtest.py` constants match. Spot-check
+      `RISK_PCT`, `MAX_LEVERAGE`, `TIME_STOP_BARS`, `MAX_OPEN_POSITIONS`,
+      `MAX_DAILY_LOSS_PCT`, `MAX_WEEKLY_LOSS_PCT`, `DRAWDOWN_PAUSE_PCT`,
+      `DRAWDOWN_STOP_PCT`, and the regime/breakout parameters.
+- [ ] `backtest.py` matches `docs/STRATEGY_SPEC.md` (the canonical spec).
 - [ ] `rules.json` `safety_flags`: `paper_trading_enabled: true`,
       `live_trading_enabled: false`, `kill_switch_required: true`.
-- [ ] `docs/STRATEGY_ADA_XRP_LEGACY.md` has a clear "superseded" note at
-      the top so future-you doesn't accidentally implement it.
+- [ ] Legacy docs (`docs/STRATEGY_1_*`, `STRATEGY_2_*`, `*_LEGACY.md`)
+      are clearly marked superseded so future-you doesn't reimplement them.
 
 ## I. Paper-trade setup
 
@@ -200,8 +205,9 @@ Acknowledged here so you don't forget:
 - [ ] High-vol slippage is implemented (fires when bar range > 2×ATR).
 - [ ] RSI does not produce false NaNs in strong trends.
 - [ ] No duplicate same-symbol positions occur.
-- [ ] Max open positions (2) is enforced.
-- [ ] Daily (per asset) and weekly (portfolio) trade limits are enforced.
+- [ ] Max open positions (1, Phase 1) is enforced.
+- [ ] Per-asset/day (1) trade limit and daily-loss (2%) / weekly-loss
+      (5%) halts are enforced.
 - [ ] Drawdown pause (15%) and drawdown stop (25%) are tested.
 - [ ] Backtest result is understood to qualify the strategy for paper
       trading only — not for live trading.
@@ -215,7 +221,8 @@ Acknowledged here so you don't forget:
 - [ ] Kill switch exists and is tested (cancels orders, closes
       positions, disables further entries).
 - [ ] Live trading remains disabled by default in `rules.json`.
-- [ ] First live phase uses $50, not the full $500.
+- [ ] The account is funded enough for ≥ 1 nano contract with the 1%
+      risk rule intact before any live entry (Phase-1 sizing).
 - [ ] Bot capital is isolated from long-term spot holdings (separate
       sub-account or wallet).
 

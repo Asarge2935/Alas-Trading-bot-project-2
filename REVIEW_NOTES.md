@@ -1,5 +1,14 @@
 # Review Notes — Alas Trading Bot Backtester
 
+> ## ⚠ HISTORICAL (2026-05-24)
+> These notes review the **v2 6H RSI-pullback** backtester. `backtest.py`
+> has since been rewritten to the canonical v3 strategy
+> (`docs/STRATEGY_SPEC.md`: regime + relative strength + breakout). Many
+> specifics below (RSI entries, 2/3/6-ATR stops/targets, 6-asset
+> universe, $5 fixed risk, 2 open positions) no longer match the code.
+> Kept for history. The MTM/cost/reconciliation engineering it describes
+> was preserved in the rewrite.
+
 Branch: `claude/new-session-ysAXb`
 
 This document records every issue found during review and what was
